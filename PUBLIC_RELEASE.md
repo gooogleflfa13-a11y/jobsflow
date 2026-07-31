@@ -19,6 +19,11 @@ Before publishing an existing repository, also run:
 python3 tools/public_release_check.py --history
 ```
 
+`--history` checks the release `HEAD` by default. If you intentionally need to
+audit unrelated local or upstream refs as well, use
+`python3 tools/public_release_check.py --history --all-refs`; those refs are not
+part of the public branch unless they are pushed.
+
 If history contains `JobSearch_2026/`, filled templates or other candidate data,
 do not push that history to a public remote. Create a new repository from a
 reviewed source snapshot, preserve `LICENSE` and upstream attribution, run the

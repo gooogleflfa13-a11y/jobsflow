@@ -84,9 +84,10 @@ def source_errors() -> list[str]:
     return errors
 
 
-def history_errors() -> list[str]:
+def history_errors(*, all_refs: bool = False) -> list[str]:
     errors = source_errors()
-    history = _git("log", "--all", "--format=", "--name-only")
+    rev_args = ("--all",) if all_refs else ("HEAD",)
+    history = _git("log", *rev_args, "--format=", "--name-only")
     if history.returncode:
         errors.append("cannot inspect Git history")
     else:
@@ -99,7 +100,7 @@ def history_errors() -> list[str]:
                 "Git history contains private workspace paths; publish from a new "
                 f"clean snapshot instead ({preview})"
             )
-    objects = _git("rev-list", "--objects", "--all")
+    objects = _git("rev-list", "--objects", *rev_args)
     if objects.returncode == 0:
         object_paths: dict[str, str] = {}
         for line in objects.stdout.splitlines():
@@ -147,8 +148,15 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--source", action="store_true")
     mode.add_argument("--history", action="store_true")
+    parser.add_argument(
+        "--all-refs",
+        action="store_true",
+        help="Also inspect unrelated local/upstream refs; default checks release HEAD only",
+    )
     args = parser.parse_args(argv)
-    errors = history_errors() if args.history else source_errors()
+    errors = (
+        history_errors(all_refs=args.all_refs) if args.history else source_errors()
+    )
     if errors:
         print(f"public_release_check: {len(errors)} failure(s)")
         for error in errors:
