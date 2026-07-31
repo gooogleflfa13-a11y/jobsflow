@@ -1,0 +1,20 @@
+{
+  "name": "jobsdb-cli",
+  "version": "1.0.0",
+  "description": "CLI for searching JobsDB Hong Kong's public REST search API (hk.jobsdb.com, Seek HK-Main market) — no authentication, zero runtime dependencies.",
+  "type": "module",
+  "main": "src/cli.ts",
+  "bin": {
+    "jobsdb-search": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/bun": "latest"
+  }
+}

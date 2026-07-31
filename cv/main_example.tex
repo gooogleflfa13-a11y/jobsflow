@@ -1,0 +1,43 @@
+%% JobsFlow public CV structure example.
+%% Filled candidate CVs belong only in the gitignored personal workspace.
+%% [YOUR_NAME] [YOUR_EXPERIENCE]
+
+\documentclass[11pt,a4paper,sans]{moderncv}
+\moderncvstyle{banking}
+\moderncvcolor{blue}
+\usepackage[scale=0.82]{geometry}
+\usepackage{hyperref}
+
+\name{[YOUR]}{[NAME]}
+\address{[YOUR_LOCATION]}{}{}
+\phone[mobile]{[YOUR_PHONE]}
+\email{[YOUR_EMAIL]}
+\extrainfo{\href{[YOUR_LINKEDIN_URL]}{LinkedIn}}
+
+\begin{document}
+\makecvtitle
+
+\section{Profile}
+[YOUR_FACT_CHECKED_SUMMARY]
+
+\section{Core Skills}
+\begin{itemize}
+  \item [YOUR_PRIMARY_SKILLS]
+\end{itemize}
+
+\section{Experience}
+\begin{itemize}
+  \item{\cventry{[DATES]}{[ROLE]}{[ORGANIZATION]}{[LOCATION]}{}{
+    \begin{itemize}
+      \item [YOUR_EXPERIENCE]
+      \item [FACT_CHECKED_BULLET]
+    \end{itemize}
+  }}
+\end{itemize}
+
+\section{Education}
+\begin{itemize}
+  \item{\cventry{[DATES]}{[DEGREE]}{[INSTITUTION]}{[LOCATION]}{}{}}
+\end{itemize}
+
+\end{document}

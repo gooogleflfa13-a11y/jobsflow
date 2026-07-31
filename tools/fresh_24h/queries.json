@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "description": "Industry-neutral product template. Run /setup to create a private search configuration.",
+  "setup_required": true,
+  "location_linkedin": "",
+  "query_policy": {
+    "mandatory_buckets": [],
+    "notes": "No profession is the product default. /setup writes user-specific buckets under JobSearch_2026/00_Profile/queries.json."
+  },
+  "relevance_keywords": [],
+  "adjacent_keywords": [],
+  "noise_title_patterns": [],
+  "queries": [],
+  "portals": {
+    "linkedin": {
+      "enabled": true,
+      "cli": ".agents/skills/linkedin-search/cli/src/cli.ts",
+      "jobage_days": 1
+    },
+    "jobsdb": {
+      "enabled": true,
+      "cli": ".agents/skills/jobsdb-search/cli/src/cli.ts",
+      "jobage_days": 7,
+      "client_max_hours": 24
+    },
+    "ctgoodjobs": {
+      "enabled": true,
+      "cli": ".agents/skills/ctgoodjobs-search/cli/src/cli.ts",
+      "jobage_days": 1
+    },
+    "freehire": {
+      "enabled": true,
+      "cli": ".agents/skills/freehire-search/cli/src/cli.ts",
+      "jobage_days": 1
+    }
+  },
+  "scoring_profile": {
+    "domain": "unconfigured",
+    "core_keywords": [],
+    "adjacent_keywords": [],
+    "evidence_keywords": [],
+    "preferred_industry_keywords": [],
+    "track_mapping": {
+      "A": "Target A",
+      "B": "Target B",
+      "C": "Target C",
+      "D": "Target D",
+      "E": "Target E",
+      "F": "Other"
+    },
+    "track_rules": [],
+    "weights": {
+      "resume": 0.35,
+      "eligibility": 0.2,
+      "direction": 0.2,
+      "industry": 0.1,
+      "work": 0.1,
+      "pay": 0.05
+    }
+  },
+  "hard_reject_title_patterns": [],
+  "soft_flag_patterns": {}
+}

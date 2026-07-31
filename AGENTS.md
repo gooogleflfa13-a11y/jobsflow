@@ -1,0 +1,52 @@
+# Agent instructions (platform-agnostic)
+
+All agents (Claude, Cursor, Codex, etc.) must read and obey:
+
+## Slash commands
+
+| Command | What it does | When to use |
+|---------|-------------|-------------|
+| `/setup` | 首次安装向导：检查环境、读简历、问意向、生成配置 | 新用户首次使用 |
+| `/scan` | 扫描新职位 + 两段评分 | 日常扫岗 |
+| `/push` | 推送评分结果到 Google Sheets | 扫描后入表 |
+| `/materials` | 为选定岗位生成投递材料 | 用户点名要投某岗 |
+| `/apply` | 验证材料并进入投递确认（不自动提交） | 材料完成后 |
+
+## /scan 模式
+
+```
+/scan              # 临时模式：只扫上次刷新之后的新岗（系统自动记忆时间）
+/scan temp         # 同上
+/scan daily        # 扫最近 24 小时
+/scan 3            # 扫最近 3 小时
+```
+
+临时模式是默认模式。系统记住每次刷新时间，下次只扫这段时间内的新岗。
+
+## System rules
+
+See `docs/system_rules.md` for:
+- PDF production rules (LibreOffice headless, no WPS)
+- Private search buckets and product/personal isolation
+- Two-pass scoring (gate 3.3 -> deep JD -> rescore)
+- Materials decoupled from scan (never auto-generate CV during scan)
+
+## Tracker defaults
+
+See `docs/tracker_defaults.md` for:
+- Tracker column layout
+- Batch marking (beige/本轮新增/入表时间)
+- Two-pass scoring defaults
+
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `tools/fresh_24h/temp_two_pass.sh` | One-command scan + score |
+| `tools/fresh_24h/push_to_gsheet.py` | Push to Google Sheets |
+| `tools/fresh_24h/queries.json` | Industry-neutral setup-required template |
+| `JobSearch_2026/00_Profile/queries.json` | Private runtime search/scoring config |
+| `tools/fresh_24h/refresh_state.py` | Remembers last refresh time |
+| `tools/fresh_24h/jd_cache.py` | JD full-text cache (URL-keyed) |
+| `tools/job_materials/` | Application materials pipeline |
+| `setup.py` | First-time setup wizard |

@@ -1,0 +1,7 @@
+{
+  "candidate_name": "Your Name",
+  "phone": "+852 XXXXXXXX",
+  "email": "your.email@example.com",
+  "linkedin_url": "https://hk.linkedin.com/in/your-profile",
+  "notes": "Copy this example to JobSearch_2026/00_Profile/config.personal.json and fill in your details. The private file is Git-ignored and used only by the application-materials workflow."
+}
