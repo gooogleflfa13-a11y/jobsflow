@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from tools.profile_recovery import repair_scoring_profile
 
 
 @dataclass
@@ -37,6 +40,9 @@ class ScoreResult:
     confidence: str
     brief: str = ""  # 中文简述
     cap_notes: str = ""  # caps triggered, semicolon-joined
+
+
+_PROFILE_NOTICES: set[str] = set()
 
 
 def _zh_role_label(title: str) -> str:
@@ -249,8 +255,24 @@ def load_scoring_profile(repo: Path | None = None) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return {}
-    profile = value.get("scoring_profile") if isinstance(value, dict) else {}
-    return profile if isinstance(profile, dict) else {}
+    profile, health, changed = repair_scoring_profile(jobsearch_root, persist=True)
+    notice_key = str(path.resolve())
+    if changed and notice_key not in _PROFILE_NOTICES:
+        print(
+            "INFO: scoring profile recovered missing evidence/industry keywords "
+            "from private resume evidence and existing query intent.",
+            file=sys.stderr,
+        )
+        _PROFILE_NOTICES.add(notice_key)
+    if health.get("status") != "ready" and notice_key not in _PROFILE_NOTICES:
+        print(
+            "WARNING: scoring profile is incomplete; scores are capped until "
+            "you run /setup and confirm target roles/industry.",
+            file=sys.stderr,
+        )
+        _PROFILE_NOTICES.add(notice_key)
+    profile["_profile_health"] = health
+    return profile
 
 
 def score_job(
@@ -365,6 +387,10 @@ def score_job(
 
     cap = 5.0
     cap_notes: list[str] = []
+    profile_health = profile.get("_profile_health")
+    if isinstance(profile_health, dict) and profile_health.get("status") != "ready":
+        cap = min(cap, 2.9)
+        cap_notes.append("评分配置不完整，已阻止中性高分")
     if direction <= 1.8:
         cap = min(cap, 2.9)
         cap_notes.append("超出已配置求职方向cap2.9")

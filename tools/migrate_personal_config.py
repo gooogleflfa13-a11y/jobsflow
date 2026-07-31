@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-time migration from an old tracked search config into the private workspace."""
+"""Migrate and repair private search configuration without touching product defaults."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from tools.io_utils import atomic_write_json
+from tools.profile_recovery import repair_scoring_profile
 
 
 def _legacy_queries_from_head(repo: Path) -> dict[str, Any] | None:
@@ -39,6 +40,7 @@ def migrate_legacy_queries(repo: Path) -> Path | None:
     repo = Path(repo).resolve()
     destination = repo / "JobSearch_2026" / "00_Profile" / "queries.json"
     if destination.exists():
+        repair_scoring_profile(repo, persist=True)
         return destination
     legacy = _legacy_queries_from_head(repo)
     if not legacy:
@@ -93,6 +95,7 @@ def migrate_legacy_queries(repo: Path) -> Path | None:
         },
     )
     atomic_write_json(destination, legacy)
+    repair_scoring_profile(repo, persist=True)
     return destination
 
 
@@ -100,7 +103,23 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     path = migrate_legacy_queries(repo)
     if path:
+        profile, health, _ = repair_scoring_profile(repo, persist=True)
+        data = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            pass
+        recovered = ", ".join(
+            (data.get("profile_recovery") or {}).get("fields")
+            or health.get("recovered_fields")
+            or []
+        ) or "none"
         print(f"Private search config ready: {path}")
+        print(
+            f"Scoring profile: {health.get('status')} "
+            f"(recovered={recovered}, evidence={len(profile.get('evidence_keywords') or [])}, "
+            f"industry={len(profile.get('preferred_industry_keywords') or [])})"
+        )
         return 0
     print("No legacy tracked queries found; run /setup.")
     return 1
