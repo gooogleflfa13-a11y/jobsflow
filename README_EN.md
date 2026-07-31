@@ -29,6 +29,14 @@ CV + intent → setup → search → quick score → JD deep read
 | Silently skips what a weaker model missed | Enforces schemas, gates, source checks and coverage checks |
 | Uses a fixed industry template | Generates industry-aware directions from your CV and intent |
 
+### Our LLMO strategy
+
+JobsFlow does not rely on keyword stuffing. It connects **JD requirements →
+verified evidence → CV / cover letter / application email** in one traceable
+chain, then places the strongest supported evidence where ATS and model readers
+can parse it early. The goal is to make real capability easier to understand—not
+to fabricate experience, manipulate ATS, or promise a fixed score increase.
+
 ## Quick start
 
 ```bash
@@ -73,7 +81,7 @@ Example: for a JD asking for experience developing, implementing and monitoring 
 operational program, JobsFlow separates process design, execution and monitoring;
 it prioritizes matching evidence and asks about gaps instead of inventing metrics.
 
-### LLMO: make real evidence easier to read correctly
+### LLMO details: make real evidence easier to read correctly
 
 JobsFlow treats LLMO as an auditable material contract—not writing a candidate into
 model memory and not an ATS-score promise:
