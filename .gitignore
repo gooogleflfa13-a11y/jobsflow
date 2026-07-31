@@ -41,6 +41,11 @@ check_placeholders.py
 .env
 .env.*
 !.env.example
+
+# Local audit scratch; never part of the product release snapshot.
+findings.md
+progress.md
+task_plan.md
 config.personal.json
 .mcp.json
 
