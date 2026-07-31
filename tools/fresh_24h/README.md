@@ -29,6 +29,17 @@ python3 tools/fresh_24h/push_to_gsheet.py \
   --also-local --min-score 3.3 --mode temp
 ```
 
+Local-only tracking (no Google credentials):
+
+```bash
+python3 tools/fresh_24h/push_to_gsheet.py \
+  --local-only --min-score 3.3 --mode temp
+```
+
+This merges scored rows into the main local
+`JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.csv`, including batch and
+status fields. Google Sheets remains an optional sync destination.
+
 `temp` scans only since the last successful refresh; `daily` scans about 24
 hours. Add `--no-record` to preview without changing state.
 

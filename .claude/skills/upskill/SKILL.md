@@ -17,7 +17,8 @@ allowed-tools: Read, Write, Glob, Grep, WebFetch, WebSearch
 
 ## Invocation
 
-- **`/upskill`** — aggregate mode: analyses all jobs in `job_search_tracker.csv`
+- **`/upskill`** — aggregate mode: analyses rows in the latest
+  `JobSearch_2026/02_Tracker/hk_apply_list_*.csv` (run `/push --local-only` first)
 - **`/upskill <URL>`** — targeted mode: analyses a single job posting fetched from the URL
 
 ---
@@ -34,16 +35,22 @@ In targeted mode, derive a slug from the job title and company for the report fi
 ## Step 2: Load Data
 
 ### Aggregate mode
-1. Read `job_search_tracker.csv`. Extract all rows. The columns are:
-   `date, company, sector, role, role_type, channel, status, contact_person, fit_rating, notes, cv_file, cover_letter_file, source`
-2. For each row, note the `role`, `company`, and `fit_rating`. The `fit_rating` column is a 0–100 score where 100 = perfect fit. You will use it to weight gaps — a lower fit rating means the role exposed more gaps.
-3. Read `.claude/skills/job-application-assistant/01-candidate-profile.md` to get the candidate's current skills and experience.
+1. Read the latest `JobSearch_2026/02_Tracker/hk_apply_list_*.csv`. Extract rows
+   using the current tracker columns (`岗位编号`, `职位`, `公司`, `匹配分`,
+   `CareerOps分数`, `材料状态`, `赛道`, `来源`, `链接`, and notes where present).
+2. For each row, note the `role`, `company`, and the available score (`CareerOps分数`
+   or `匹配分`). These scores are not treated as a universal 0–100 fit rating;
+   use them only as a relative signal when weighting gaps.
+3. Read the private profile evidence and résumé runtime under
+   `JobSearch_2026/00_Profile/`, never a filled tracked template.
 4. Check `upskill/` for the most recent aggregate report file (`report-YYYY-MM-DD.md`) — if one exists, note its date and load it for the diff in Step 8.
 
 ### Targeted mode
 1. Use WebFetch to retrieve the job posting from the URL.
 2. Extract: job title, company, required skills, preferred skills, responsibilities, and any domain context.
-3. Read `.claude/skills/job-application-assistant/01-candidate-profile.md` for the candidate's current skills.
+3. Read the private profile evidence and résumé runtime under
+   `JobSearch_2026/00_Profile/`; never use the tracked placeholder template as a
+   candidate profile.
 4. No tracker data is used in targeted mode.
 
 ## Step 3: Pass 1 — Hard Skill Diff
@@ -51,9 +58,15 @@ In targeted mode, derive a slug from the job title and company for the report fi
 Extract required and preferred technical skills from each job source:
 
 ### Aggregate mode
-For each job row in the tracker, you do not have the full posting — use the `role`, `sector`, and `notes` columns to infer likely required skills. If the row has a `source` URL, you may optionally WebFetch it for more detail, but skip if the URL is missing or dead.
+For each job row in the tracker, you do not have the full posting — use the
+`职位`, `赛道`, `简述` and notes columns to infer likely required skills. If the
+row has a `链接`, you may optionally WebFetch it for more detail, but skip if
+the URL is missing or dead.
 
-Build a **skill frequency map**: for each extracted skill, count how many jobs mention it. Then apply a **fit weight**: for each job, multiply the skill count contribution by `(100 - fit_rating) / 100` — lower fit jobs contribute more to the gap score.
+Build a **skill frequency map**: for each extracted skill, count how many jobs
+mention it. If a relative tracker score is available, let lower-scoring jobs
+contribute somewhat more to the gap score; do not assume that every portal uses
+the same score scale.
 
 Final score for each skill: `sum of (fit_weight × occurrence)` across all jobs.
 
@@ -61,7 +74,9 @@ Final score for each skill: `sum of (fit_weight × occurrence)` across all jobs.
 Extract the explicit required and preferred skills from the fetched posting. Each skill gets equal weight (no fit weighting needed since there is only one job). List required skills before preferred skills, then sort alphabetically within each group.
 
 ### Diff against profile
-Remove any skill from the list that is already present in the candidate profile (`01-candidate-profile.md`). Be generous — if the profile mentions a skill in any form (e.g. "Python" covers "Python scripting"), remove it.
+Remove any skill from the list that is already present in the private profile
+evidence. Be generous — if the profile mentions a skill in any form (e.g.
+"Python" covers "Python scripting"), remove it.
 
 What remains is the **hard skill gap list**. In aggregate mode, rank by score descending. In targeted mode, list required skill gaps before preferred skill gaps, then sort alphabetically within each group.
 
@@ -241,7 +256,7 @@ After saving, print:
 
 1. **Never fabricate resources.** Only cite resources found via actual WebSearch results. Do not invent course names, URLs, or authors.
 2. **Search with the current year.** Include the year in every WebSearch query for resources so results stay fresh.
-3. **Targeted mode ignores the tracker.** In targeted mode, analyse only the fetched posting. Do not load or reference `job_search_tracker.csv`.
+3. **Targeted mode ignores the tracker.** In targeted mode, analyse only the fetched posting. Do not load or reference the local tracker.
 4. **Be generous with profile matching.** If a skill appears in the candidate profile in any form, do not flag it as a gap. Avoid false positives.
 5. **Print the heatmap before the learning plan.** Always show the intermediate heatmap table in the terminal before proceeding to resource search, so the user can see what you are working from.
 6. **Omit Low-priority gaps from the learning plan.** List them in the heatmap for completeness, but do not generate study resources for them unless the user asks.

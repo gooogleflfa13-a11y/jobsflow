@@ -190,6 +190,23 @@ class PublicTemplateGuardTests(GuardRepoFixture):
         self.assertEqual(result.returncode, 1)
         self.assertIn("resume-shaped personal metric", result.stdout)
 
+    def test_personal_contact_data_in_public_template_fails(self):
+        path = self.root / ".claude/skills/job-application-assistant/01-candidate-profile.md"
+        path.write_text(
+            "\n".join(
+                security_guards.PUBLIC_TEMPLATE_REQUIREMENTS[
+                    ".claude/skills/job-application-assistant/01-candidate-profile.md"
+                ]
+            )
+            + "\nContact: Alice Wang <alice.wang@example.net> +852 6123 4567\n",
+            encoding="utf-8",
+        )
+
+        result = run_guards(self.root)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("personal contact data", result.stdout)
+
     def test_historical_candidate_marker_anywhere_in_product_fails(self):
         path = self.root / "docs" / "example.md"
         path.parent.mkdir(exist_ok=True)

@@ -219,7 +219,7 @@ def write_application_preflight(package: Path, value: dict[str, Any]) -> None:
         lines.append("- 无")
     lines += [
         "",
-        "> 低智能模型必须按 next_action 执行，不得自行跳过或猜测答案。",
+        "> 非旗舰模型必须按 next_action 执行，不得自行跳过或猜测答案。",
         "",
     ]
     atomic_write_text(package / "application_preflight.md", "\n".join(lines))

@@ -1,13 +1,18 @@
-# Jobsflow 外部审计手册 v1.0
+# JobsFlow 外部审计手册 v2.0
 
 > 将此文档作为 prompt 交给任意 AI agent（Claude Code、Cursor、Codex 等），对
 > jobsflow 仓库执行全维度独立审计。每节末尾列出必须回答（pass/fail/risk）的
 > 问题，审计 agent 应逐条回答并提供证据（文件路径 + 行号）。
 
+> **2026-07-31 更新说明：** 本手册已按跨行业产品和当前源码刷新。旧的法律/合规、
+> LaTeX、`/scrape` 和 `job-scraper` 假设不再适用；审计时以当前文件系统、
+> `AGENTS.md`、`docs/system_rules.md` 和 `README.md` 为准。目录树中不存在的路径
+> 应记录为文档漂移，而不是假设它仍然是运行时入口。
+
 ## 0. 仓库上下文
 
-- **用途**: AI 辅助香港法律行业求职系统
-- **核心管线**: `/setup`（简历→配置）→ `/scan`（多门户搜索→两段评分）→ `/push`（Google Sheets）→ `/materials`（JD 定制 CV/CL）→ `/apply`（LaTeX 编译投递）
+- **用途**: 面向各行业的本地优先 AI 求职执行系统
+- **核心管线**: `/setup`（简历→私有配置）→ `/scan`（多门户搜索→两段评分）→ `/push`（Google Sheets 或本地 CSV）→ `/materials`（JD/公司研究定制 CV/CL）→ `/apply`（LibreOffice headless PDF + 人工确认）
 - **门户**: LinkedIn、JobsDB、CTgoodjobs、FreeHire
 - **语言**: Python (工具管线) + TypeScript/Bun (门户 CLI) + Shell (胶水脚本) + Markdown (agent 规则)
 - **个人数据存储**: 仅本地 `JobSearch_2026/`（gitignored），仓库不含真实 PII
@@ -28,14 +33,6 @@ ai-job-search/
 ├── .mcp.json                    ← 安全：MCP 服务器配置（gitignored）
 ├── setup.py                     ← 审：/setup 向导（环境检查、简历解析、配置生成）
 │
-├── cv/                          ← 审：LaTeX CV 模板（main_*.tex gitignored）
-│   └── main_example.tex         ← 引用模板（tracked）
-│
-├── cover_letters/               ← 审：LaTeX CL 模板（cover_*.tex gitignored）
-│   ├── cover_example.tex        ← 引用模板（tracked）
-│   ├── cover.cls                ← 审：CL 文档类
-│   └── OpenFonts/fonts/         ← 字体文件（嵌入 PDF 用）
-│
 ├── tools/                       ← 核心管线——所有 Python/Shell 工具
 │   ├── security_guards.py       ← 审（P0）：权限白名单 + gitignore + 生命周期脚本 三方检查
 │   ├── lint_skills.py           ← 审：技能文件规范检查
@@ -45,10 +42,10 @@ ai-job-search/
 │   │
 │   ├── fresh_24h/               ← /scan + /push 管线
 │   │   ├── temp_two_pass.sh     ← 入口：/scan 胶水脚本（temp/daily/N-hours）
-│   │   ├── fresh_24h_scan.py    ← 审：多门户搜索编排（878行）、去重、过滤
-│   │   ├── two_pass_score.py    ← 审：两段评分（540行）、gate 3.3、deep JD fetch
-│   │   ├── push_to_gsheet.py    ← 审：Google Sheets 推送（799行）、合并/格式
-│   │   ├── queries.json         ← 审：25 个搜索查询配置（3 强制类别）
+│   │   ├── fresh_24h_scan.py    ← 审：多门户搜索编排（972行）、去重、过滤
+│   │   ├── two_pass_score.py    ← 审：两段评分（544行）、gate 3.3、deep JD fetch
+│   │   ├── push_to_gsheet.py    ← 审：Google Sheets/本地 CSV 推送（901行）、合并/格式
+│   │   ├── queries.json         ← 审：行业中立、setup-required 的空模板
 │   │   ├── refresh_state.py     ← 审：刷新时间状态（原子写入、备份恢复）
 │   │   ├── jd_cache.py          ← 审：URL-Keyed JD 缓存（SHA-256、TTL 60天）
 │   │   ├── job_id.py            ← 审：Job-ID 格式定义 {A-F}{0-3}-{序列}
@@ -56,38 +53,42 @@ ai-job-search/
 │   │   ├── deep_analyze_job.py  ← 审：单职位深度分析（仅 LinkedIn）
 │   │   ├── linkedin_enrich.py   ← 审：LinkedIn JD 深度获取
 │   │   ├── portal_jd_browser.py ← 审：Playwright 浏览器 JD 抓取（JobsDB）
-│   │   ├── cv_temu_baseline_export.py ← 审：CV 基线导出
 │   │   ├── careerops_quickscore.py ← 审：CareerOps 快速评分引擎
+│   │   ├── local_tracker.py      ← 审：本地 CSV 主台账合并
+│   │   ├── tracker_schema.py     ← 审：setup 个性化表头消费
 │   │   ├── promote_fresh_to_main.py ← 审：scan 结果提升至主 tracker
 │   │   ├── validate_queries.py  ← 审：查询配置验证
 │   │   ├── docx_to_pdf.py       ← 审：LibreOffice 无头 PDF 转换
 │   │   └── queries_local_firms_preview.json ← 预览模式查询（gitignored）
 │   │
 │   ├── job_materials/           ← /materials 管线
-│   │   ├── __main__.py          ← 入口：argparse 子命令（base/url/jd/enrich/tailor/pipeline/resume）
+│   │   ├── __main__.py          ← 入口：argparse 子命令（base/url/jd/enrich/tailor/pipeline/resume/company/preflight）
 │   │   ├── __init__.py          ← 包声明
 │   │   ├── bases.py             ← 审：A-F 简历基线的同步与事实检查
 │   │   ├── enrich.py            ← 审：JD 深度内容丰富（缓存→CLI→浏览器 三级fallback）
 │   │   ├── tailor.py            ← 审：面向 JD 的 bullet 重排序
 │   │   ├── evidence.py          ← 审：事实检查证据记录
 │   │   ├── jd_store.py          ← 审：JD 存储与检索
+│   │   ├── packages.py          ← 审：从本地 tracker 按 job ID 创建/解析材料包
+│   │   ├── company_research.py  ← 审：公司快查、来源与缓存
+│   │   ├── requirements_engine.py ← 审：确定性申请前置问题
 │   │   ├── paths.py             ← 审：路径解析（package 目录、job ID 查找）
 │   │   ├── resume_parse.py      ← 审：PDF 简历解析
 │   │   └── url_normalize.py     ← 审：URL 标准化
 │   │
-│   ├── core_applications/       ← 核心投递包管理
-│   │   ├── build_manifest.py    ← 审：构建投递包清单
+│   ├── core_applications/       ← 核心投递包管理（兼容旧投递包）
+│   │   ├── validate_package.py  ← 审：DOCX/PDF 投递包校验（LaTeX 源可选）
 │   │   ├── sync_tracker_status.py ← 审：同步 tracker 状态
 │   │   └── validate_package.py  ← 审：投递包校验
 │   │
 │   ├── obscura/                 ← 审：无头浏览器抓取工具（gitignored）
-│   └── _deprecated_wps/         ← 审：WPS 废弃脚本
+│   └── (no WPS runtime; LibreOffice is the documented PDF engine)
 │
 ├── tests/                       ← 测试套件
-│   ├── test_security_guards.py  ← 审（P0）：168行，安全三方测试
+│   ├── test_security_guards.py  ← 审（P0）：242行，安全三方测试
 │   ├── test_fresh_scan_helpers.py ← 审：scan helpers 测试
-│   ├── test_core_application_manifest.py ← 审：manifest 测试
 │   ├── test_core_application_validator.py ← 审：package 校验测试
+│   ├── test_materials_workflow_contract.py ← 审：JD/包创建/setup→pipeline 合成契约
 │   ├── test_salary_lookup.py    ← 审：薪金查询测试
 │   ├── test_convert_salary_excel.py ← 审：薪金转换测试
 │   └── conftest.py / pytest.ini ← 缺失（需审计）
@@ -151,10 +152,6 @@ ai-job-search/
 │   │   │   ├── 06-cover-letter-templates.md ← 审：CL 模板规范
 │   │   │   └── 07-interview-prep.md         ← 审：面试准备框架
 │   │   │
-│   │   ├── job-scraper/         ← 审：搜索技能
-│   │   │   ├── SKILL.md         ← 审：技能定义
-│   │   │   └── search-queries.md ← 审：搜索查询参考
-│   │   │
 │   │   └── upskill/             ← 审：技能提升助手
 │   │
 │   ├── agents/                  ← 审：agent 定义
@@ -168,12 +165,6 @@ ai-job-search/
 │   ├── system_rules.md          ← 审：系统规则
 │   ├── tracker_defaults.md      ← 审：tracker 默认值
 │   └── superpowers/             ← SDD 计划与 specs
-│
-├── job_scraper/                 ← 审：法律行业监控
-│   └── legal_monitor/           ← 审：CityU/CUHK/HKU/SFC/DOJ/HKIAC/HKMA（gitignored）
-│
-├── templates/                   ← 审：LaTeX 模板
-│   └── README.md                ← 审：模板说明
 │
 ├── documents/                   ← 审：文档目录（个人内容 gitignored）
 ├── upskill/                     ← 审：技能提升报告（个人输出 gitignored）
@@ -229,7 +220,7 @@ ai-job-search/
               │   │        数据层                            │            │
               │   │  Google Sheets (评分 + tracker)           │            │
               │   │  本地 CSV/JSON (queries.json, 状态文件)   │            │
-              │   │  本地 PDF/LaTeX (CV/CL 输出)              │            │
+              │   │  本地 DOCX → LibreOffice PDF (CV/CL)    │            │
               │   │  本地 JD 缓存 (jds/*.md)                  │            │
               │   └──────────────────────────────────────────┘            │
               └──────────────────────────────────────────────────────────┘
@@ -250,7 +241,7 @@ ai-job-search/
       │   ├── jobsdb-search → searchGet → toResult
       │   ├── ctgoodjobs-search → resolveHeaders → searchPost
       │   └── freehire-search → apiGet → toResult
-      ├── apply_rules() → 法律相关性过滤 + 噪声排除
+      ├── apply_rules() → 按私有 setup 的行业相关性规则过滤 + 噪声排除
       ├── load_tracker_keys() → 去重（vs 已有 tracker CSV）
       └── 写入 <timestamp>_fresh.csv + <timestamp>_run.json
    b. python3 two_pass_score.py ...                   # 两段评分
@@ -295,18 +286,18 @@ ai-job-search/
 
 | 文件 | 行数 | 类型 | 关键风险面 |
 |------|------|------|-----------|
-| `fresh_24h_scan.py` | 878 | Python | 正则过滤、子进程调用、去重逻辑 |
-| `push_to_gsheet.py` | 799 | Python | GCP 密钥、Sheet 合并、格式注入 |
-| `two_pass_score.py` | 540 | Python | import fallback 脆弱、deep JD 策略 |
-| `setup.py` | 498 | Python | 简历 PII 提取、配置模板注入 |
-| `job_materials/__main__.py` | 482 | Python | arg 注入、路径遍历 |
-| `linkedin-search/helpers.ts` | 338 | TS | DoH 依赖、429 retry、regex 解析 |
+| `fresh_24h_scan.py` | 972 | Python | 正则过滤、子进程调用、去重逻辑 |
+| `push_to_gsheet.py` | 901 | Python | GCP 密钥、Sheet 合并、格式注入 |
+| `two_pass_score.py` | 544 | Python | deep JD 策略、评分编排 |
+| `setup.py` | 1150 | Python | 简历 PII 提取、配置模板注入 |
+| `job_materials/__main__.py` | 667 | Python | arg 注入、路径遍历 |
+| `linkedin-search/helpers.ts` | 344 | TS | DoH 依赖、429 retry、regex 解析 |
 | `refresh_state.py` | 285 | Python | 状态损坏恢复 |
 | `ctgoodjobs-search/helpers.ts` | 211 | TS | cookie 管理、400 错误体 |
 | `freehire-search/helpers.ts` | 223 | TS | JSON 解析、base URL 注入 |
 | `jobsdb-search/helpers.ts` | 163 | TS | 429 retry、API 版本 |
-| `security_guards.py` | 140 | Python | 白名单完整性 |
-| `test_security_guards.py` | 168 | Python | P0 测试覆盖 |
+| `security_guards.py` | 297 | Python | 白名单完整性、PII 模式 |
+| `test_security_guards.py` | 242 | Python | P0 测试覆盖 |
 
 ---
 
@@ -352,7 +343,7 @@ ai-job-search/
 ### 2.1 .gitignore 覆盖范围
 - [ ] 个人 CV/CL 通配符是否覆盖所有模板引擎：`cv/main_*.*`、`cover_letters/cover_*.*`（不是仅 `.tex`）
 - [ ] 个人工作区 `JobSearch_2026/` 是否完整 gitignored
-- [ ] Tracker（`job_search_tracker.csv`）是否 gitignored
+- [ ] 主 tracker（`JobSearch_2026/02_Tracker/hk_apply_list_*.csv`）是否 gitignored
 - [ ] 薪金数据文件（`salary_data.json`、`job_scraper/seen_jobs.json`）是否 gitignored
 - [ ] 否定规则（`!...`）是否全部在 `ALLOWED_IGNORE_NEGATIONS` 白名单中
 
@@ -504,14 +495,14 @@ ai-job-search/
 - [ ] 是否有英文版（README_EN.md）
 
 ### 6.2 安装指南
-- [ ] 前置依赖是否列全（Python 3.9+、Bun、LibreOffice、LaTeX 发行版）
+- [ ] 前置依赖是否列全（Python 3.10+、Bun、LibreOffice、可选 Playwright）
 - [ ] `/setup` 流程是否文档化
 - [ ] 门户 cookie 获取方式是否有说明（CTgoodjobs）
 - [ ] 是否有已知问题/troubleshooting
 
 ### 6.3 命令/技能文档
 - [ ] 每个斜杠命令（`/setup`、`/scan`、`/push`、`/materials`）是否有 `.claude/commands/*.md` 文档
-- [ ] 每个 skill（job-application-assistant、job-scraper、upskill）是否有 SKILL.md
+- [ ] 每个公开 skill（job-application-assistant、upskill 与四个门户 skill）是否有 SKILL.md
 - [ ] 每个门户技能是否有 url-reference.md（API schema）
 
 ### 6.4 架构文档

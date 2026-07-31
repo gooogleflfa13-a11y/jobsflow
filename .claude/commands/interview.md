@@ -12,7 +12,10 @@ Follow these steps **in order**.
 
 `$ARGUMENTS` may contain a company name (optionally with a role), e.g. `/interview acme`.
 
-- **With an argument:** match against `job_search_tracker.csv` rows (case-insensitive on company, then role). One match → proceed. Several → list and ask. None → this application isn't tracked; suggest `/outcome <company>` to register it first, or accept the posting and role details directly if the user wants to prep anyway.
+- **With an argument:** match against the latest local tracker CSV by company/role or
+  job ID. One match → proceed. Several → list and ask. None → this application isn't
+  tracked; suggest `/outcome <company>` to register it first, or accept the posting
+  and role details directly if the user wants to prep anyway.
 - **Without an argument:** list tracker rows whose status suggests a live process (`interview`, `offer`, or recently `applied`) and ask which one. If the tracker is empty, ask for the company, role, and posting.
 
 v1 preps for a **specific application**. Generic no-target practice is out of scope - if asked, prep against a real tracked application instead.
@@ -21,11 +24,13 @@ v1 preps for a **specific application**. Generic no-target practice is out of sc
 
 ## Step 1: Load the Application Context
 
-1. **The archive** (maintained by `/outcome`): `documents/applications/<company>_<role>/`
+1. **The archive** (maintained by `/outcome`):
+   `JobSearch_2026/03_Applications/<company>_<role>/` (read the legacy
+   `documents/applications/` path only when an older archive is explicitly found)
    - `job_posting.md` - the exact posting the user applied to
-   - `cv_draft.tex` and `cover_letter.tex` - what was actually submitted. **These are what the interviewer read**; every talking point must be consistent with their claims.
+   - submitted DOCX/PDF files - what was actually submitted. **These are what the interviewer read**; every talking point must be consistent with their claims.
    - `outcome.md` - the stage reached so far and any recorded feedback from earlier stages. Feedback from stage N is the highest-value input for stage N+1 prep.
-2. **Fallbacks** (the application may predate `/outcome`): posting via WebFetch on the tracker row's `source` URL, or ask the user to paste it; CV via `cv/main_<company>.tex` and cover letter via `cover_letters/cover_<company>_*.tex`. State plainly which context is missing rather than guessing - and suggest `/outcome <company>` to build the archive for next time.
+2. **Fallbacks** (the application may predate `/outcome`): posting via WebFetch on the tracker row's `链接`, or ask the user to paste it; then use the selected package's DOCX/PDF files. State plainly which context is missing rather than guessing - and suggest `/outcome <company>` to build the archive for next time.
 3. **Ask the user what this interview is** (skip anything `outcome.md` already records): stage (phone screen / technical / case / final round), date, format (phone, video, onsite), and who is interviewing (names and titles, if known).
 4. **Read the frameworks once** - do not re-read them in later steps:
    - `.claude/skills/job-application-assistant/07-interview-prep.md`
@@ -76,7 +81,7 @@ Pick 4-6 from `07`'s categories, customized to the research and the stage: role 
 ### 6. Logistics
 The phone/video tips from `07` when the format calls for them, plus date and interviewer names as a header.
 
-Save the pack to `documents/applications/<company>_<role>/interview_prep_<stage>.md` (create the folder if this application predates `/outcome`). The folder is gitignored, so the pack stays personal; one file per stage, so earlier packs remain as history. Present the pack in chat as well - the file is the artifact, the conversation is the delivery.
+Save the pack to `JobSearch_2026/03_Applications/<company>_<role>/interview_prep_<stage>.md` (create the folder if this application predates `/outcome`). The folder is gitignored, so the pack stays personal; one file per stage, so earlier packs remain as history. Present the pack in chat as well - the file is the artifact, the conversation is the delivery.
 
 ---
 
@@ -94,15 +99,19 @@ End with:
 
 > Good luck. After the interview, run `/outcome <company>` to log the stage and any feedback - it sharpens the prep for the next round, and once the process resolves it feeds your fit-framework calibration via `/setup`.
 
-If Step 3 drafted new STAR answers the user approved for keeps, remind them those were appended to `07-interview-prep.md` (or offer again if they deferred).
+If Step 3 drafted new STAR answers the user approved for keeps, remind them those
+were written to the gitignored application archive or private profile evidence
+record (never the tracked skill template).
 
 ---
 
 ### Confirmed facts write-back
-Whenever the user confirms, corrects, or supplies a fact during the workflow that is not already captured in `01-candidate-profile.md`, write it there in the same turn:
+Whenever the user confirms, corrects, or supplies a fact during the workflow that
+is not already captured in the private profile evidence record, write it to the
+gitignored workspace in the same turn:
 
-- A fact mentioned only in conversation is an *absence, not a contradiction* — adding it to `01` is safe even if `CLAUDE.md` and the master CV do not mention it.
-- If the new fact *corrects* something `CLAUDE.md` or a master CV already states, fix both. Only do this on explicit user confirmation, not conversational clarification.
+- A fact mentioned only in conversation is an *absence, not a contradiction* — adding it to the private record is safe even if product templates and the master CV do not mention it.
+- If the new fact *corrects* a private master, fix the private copy only after explicit user confirmation. Never edit tracked product templates.
 
 ## Important Rules
 
@@ -110,4 +119,4 @@ Whenever the user confirms, corrects, or supplies a fact during the workflow tha
 2. **Honesty on gaps.** Weak matches get bridge answers (acknowledge → adjacent experience → learning path), never invented experience. Same rule as everywhere else in this repo.
 3. **Verified research only.** Company specifics go in the pack only after independent confirmation. Interviewer notes stick to public professional information.
 4. **Stage-appropriate prep.** A phone screen pack and a final-round pack are different documents; recorded feedback from earlier stages takes priority over generic question lists.
-5. **Write only to the application archive.** The prep pack lands in `documents/applications/<company>_<role>/`; framework and profile files are never edited, except appending user-approved STAR examples to `07-interview-prep.md` on explicit request.
+5. **Write only to the application archive.** The prep pack lands in `JobSearch_2026/03_Applications/<company>_<role>/`; framework and profile files are never edited, except appending user-approved STAR examples to `07-interview-prep.md` on explicit request.

@@ -291,7 +291,7 @@ PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v pytho
 "$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
 "$PYTHON_BIN" -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.lock
+python3 -m pip install --require-hashes -r requirements.lock
 python3 setup.py --doctor
 ```
 
@@ -318,7 +318,7 @@ python3 setup.py --doctor
 
 ```
 /scan              # 扫新职位
-/push              # 推到 Google Sheets
+/push              # 推到 Google Sheets（可用 --local-only 只写本地 CSV）
 /materials 编号      # 给某个岗位做材料（编号从追踪表中来）
 /apply 编号           # 检查材料并进入投递确认（不会自动提交）
 ```
@@ -335,6 +335,7 @@ python3 setup.py --doctor
 | 扫最近 3 小时 | `/scan 3` |
 | 扫最近 24 小时 | `/scan daily` |
 | 推到 Google Sheets | `/push` |
+| 只用本地 CSV 台账 | `/push --local-only` |
 | 给某个岗位做材料 | `/materials <编号> <方向>` |
 | 深度分析某个 LinkedIn 岗 | 「深度分析这个岗位 <url>」 |
 

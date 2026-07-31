@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from tools.job_materials.jd_store import extract_url_from_snapshot, write_jd
+from tools.job_materials.jd_store import extract_url_from_snapshot, jd_meta, write_jd
 from tools.job_materials.paths import REPO
 from tools.job_materials.url_normalize import extract_job_id, normalize_job_url
 from tools.io_utils import atomic_write_text
@@ -191,6 +191,18 @@ def enrich_package(package: Path, root: Path, repo: Path = REPO) -> list[str]:
     if canon != url:
         notes.append(f"url canonical: {canon}")
 
+    # A user paste is an explicit source of truth.  Automatic portal enrichment
+    # may be stale/teaser-only and must never destroy the full JD the user just
+    # supplied.  This guard applies before every portal-specific branch so the
+    # pipeline cannot regress when a new fallback is added later.
+    current = jd_meta(package, root)
+    source = str(current.get("source") or "").strip().lower()
+    if source == "user_paste" and read_jd_for_guard(package, root):
+        notes.append(
+            "preserved user-pasted JD; automatic enrichment skipped (source=user_paste)"
+        )
+        return notes
+
     if "linkedin.com" in canon:
         desc, meta = try_linkedin_deep(canon, repo=repo)
         if meta.get("ok") and desc:
@@ -296,3 +308,12 @@ def enrich_package(package: Path, root: Path, repo: Path = REPO) -> list[str]:
     else:
         notes.append(f"auto deep not implemented for host; paste JD. url={canon}")
     return notes
+
+
+def read_jd_for_guard(package: Path, root: Path) -> str:
+    """Read only the body used by the user-paste preservation guard."""
+    local = package / "jd_full.md"
+    if not local.exists():
+        return ""
+    raw = local.read_text(encoding="utf-8", errors="replace")
+    return raw.split("\n---\n", 1)[-1].strip() if "\n---\n" in raw else raw.strip()

@@ -55,7 +55,7 @@ Present as:
   Full file will be replaced with a blank template.
 
 - 05-cv-templates.md — [has profile statements / already blank]
-  Profile statement templates will be cleared. LaTeX structure and tailoring guidelines are preserved.
+  Profile statement templates will be cleared. DOCX layout and tailoring guidelines are preserved.
 
 - 07-interview-prep.md — [has STAR examples / already blank]
   STAR examples and any STAR candidate stubs will be cleared. Framework, tough questions, and roleplay guidelines are preserved.

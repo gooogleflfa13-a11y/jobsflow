@@ -1,16 +1,16 @@
 # Tracker Defaults
 
-**Edit the tracker files in your personal workspace:**
+**Edit the CSV tracker in your personal workspace (or use the optional Google
+Sheets sync):**
 
 ```text
-JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.xlsx
 JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.csv
 ```
 
 | File | Description |
 |------|-------------|
-| `hk_apply_list_YYYY-MM-DD.xlsx` | **Main management table** (tier, résumé version, materials status, customized requirement fields) |
-| `hk_apply_list_YYYY-MM-DD.csv` | Same content CSV (scripts read/write CSV) |
+| `hk_apply_list_YYYY-MM-DD.csv` | **Main local management table** (tier, résumé version, materials status, customized requirement fields) |
+| Google Sheets | Optional synced management view; scripts read/write CSV locally first |
 | `fresh_24h_YYYY-MM-DD.csv` | Daily/temp scan raw candidates (title + teaser) |
 | `fresh_24h_YYYY-MM-DD_*_twopass_scored.csv` | **Two-pass scored** results (with pass-1/pass-2 columns) |
 | `fresh_24h_YYYY-MM-DD_run.json` | Scan run log |

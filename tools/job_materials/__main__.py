@@ -3,7 +3,7 @@
 JobSearch_2026 materials pipeline CLI.
 
 Honest scope:
-  - Scan two-pass (fresh_24h) is SEPARATE; this module never auto-runs on scrape.
+  - Scan two-pass (fresh_24h) is SEPARATE; this module never auto-runs on /scan.
   - Deep full JD is reliable mainly for LinkedIn; CT/JobsDB need paste (`jd set`).
   - tailor reorders from fact-checked A–F base; does NOT re-fact-check;
     plan is emphasis (skills/bullets order), not freestyle invent.
@@ -62,6 +62,7 @@ from tools.job_materials.jd_store import (  # noqa: E402
     write_jd,
 )
 from tools.job_materials.paths import LANES, jobsearch_root  # noqa: E402
+from tools.job_materials.packages import resolve_package  # noqa: E402
 from tools.job_materials.tailor import (  # noqa: E402
     build_tailored_payload,
     package_quality_exit_code,
@@ -85,21 +86,33 @@ from tools.audit_log import append_audit_event  # noqa: E402
 
 
 def _pkg(path: str | None, *, job_id: str | None = None) -> Path | None:
-    """Resolve --package path. If --job-id given, search 01_Masters for it."""
+    """Resolve --package path or create a package from a local tracker row."""
     if path:
         p = Path(path).expanduser()
         if not p.is_absolute():
             p = (Path.cwd() / p).resolve()
         return p
     if job_id:
-        root = jobsearch_root() / "01_Masters"
-        if root.is_dir():
-            candidates = sorted(root.rglob(f"*/{job_id}_*"))
-            dirs = [c for c in candidates if c.is_dir()]
-            if dirs:
-                return dirs[0].resolve()
-        print(f"ERROR: package not found for job_id={job_id} under {root}", file=sys.stderr)
-        return None
+        masters_root = (jobsearch_root() / "01_Masters").resolve()
+        try:
+            package = resolve_package(jobsearch_root(), job_id)
+        except LookupError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            print(
+                "Run /push --local-only (or --also-local) and append the selected "
+                "row to a local tracker before /materials.",
+                file=sys.stderr,
+            )
+            return None
+        try:
+            package.resolve().relative_to(masters_root)
+        except ValueError:
+            print(
+                f"ERROR: package resolution escaped 01_Masters: {package}",
+                file=sys.stderr,
+            )
+            return None
+        return package.resolve()
     return None
 
 
@@ -221,7 +234,7 @@ def cmd_url(args: argparse.Namespace) -> int:
 
 def cmd_jd(args: argparse.Namespace) -> int:
     root = jobsearch_root()
-    package = _pkg(args.package)
+    package = _pkg(args.package, job_id=getattr(args, "job_id", None))
     if package is None or not package.is_dir():
         print(f"not a package dir: {package}", file=sys.stderr)
         return 2
@@ -355,6 +368,9 @@ def cmd_tailor(args: argparse.Namespace) -> int:
 
     # When plan exists, surface quality issues for agents (unless pure tailor strict path already returned)
     code = package_quality_exit_code(payload, package, root)
+    quality_gate = payload.get("quality_gate") or {}
+    if quality_gate and not quality_gate.get("ready_for_drafting", True):
+        code = code or 4
     if code and args.allow_shallow_jd:
         # still wrote plan; non-zero so agents notice
         meta = jd_meta(package, root)
@@ -363,7 +379,7 @@ def cmd_tailor(args: argparse.Namespace) -> int:
             f"(tailor_plan written; fix blockers before sending materials)",
             file=sys.stderr,
         )
-    return code if args.allow_shallow_jd or args.allow_unchecked else 0
+    return code if args.allow_shallow_jd or args.allow_unchecked or code == 4 else 0
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
@@ -523,6 +539,9 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
             },
         )
         code = package_quality_exit_code(payload, package, root)
+        quality_gate = payload.get("quality_gate") or {}
+        if quality_gate and not quality_gate.get("ready_for_drafting", True):
+            code = code or 4
         preflight = payload.get("application_preflight") or {}
         if not preflight.get("ready_for_apply", True):
             code = code or 4
@@ -554,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Notes:\n"
-            "  • Never auto-runs on scrape / push_to_gsheet / temp_two_pass.\n"
+            "  • Never auto-runs on /scan / push_to_gsheet / temp_two_pass.\n"
             "  • pipeline writes tailor_plan + materials_status + base_master_ref;\n"
             "    exit ≠ 0 if base factcheck failed or JD stub/shallow.\n"
             "  • PDF export is manual: docx_to_pdf (LibreOffice headless).\n"
@@ -587,7 +606,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Full JD paste/store (required for CT/JobsDB; LinkedIn often via enrich)",
     )
     p.add_argument("action", choices=["set", "show"])
-    p.add_argument("--package", required=True, help="Path to package folder")
+    p.add_argument("--package", default=None, help="Path to package folder (or use --job-id)")
+    p.add_argument("--job-id", default=None, help="Job ID resolved from the local tracker")
     p.add_argument("--file", default="")
     p.set_defaults(func=cmd_jd)
 

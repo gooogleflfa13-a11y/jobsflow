@@ -6,6 +6,7 @@ from tools.fresh_24h.docx_to_pdf import (
     conversion_cache_hit,
     write_conversion_stamp,
 )
+from tools.fresh_24h.careerops_quickscore import score_job
 from tools.job_materials.paths import load_lanes
 
 
@@ -68,6 +69,27 @@ def test_explicit_target_intent_overrides_resume_industry():
 
     assert prof["domain"] == "technology"
     assert prof["track_mapping"]["A"] == "后端"
+
+
+def test_explicit_setup_constraints_reach_scoring_profile():
+    prof = setup.classify_profession("backend roles, minimum HKD 30000, no evening shifts", "")
+    intent = "backend roles, minimum HKD 30000, no evening shifts"
+    prof["minimum_salary"] = 30000
+    prof["schedule_risk_keywords"] = ["evening", "night", "weekend", "shift"]
+    queries = setup.build_queries_config(profession=prof, location="Hong Kong")
+    profile = queries["scoring_profile"]
+
+    assert profile["minimum_salary"] == 30000
+    assert "shift" in profile["schedule_risk_keywords"]
+    neutral = score_job(
+        title="Backend Engineer",
+        company="Acme",
+        teaser="Weekend shift required.",
+        salary="HKD 28,000–32,000",
+        profile=profile,
+    )
+    assert neutral.work_time_risk == "高"
+    assert "薪资" in neutral.reason
 
 
 def test_unknown_industry_fallback_uses_role_directions_not_seniority():

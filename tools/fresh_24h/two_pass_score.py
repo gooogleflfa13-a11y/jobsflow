@@ -9,7 +9,7 @@ User product rule (JobSearch line):
   5) Write scored CSV / rows for sheet — both scores visible
   6) Materials tailor is **NOT** here — only when user later makes a package
 
-This is NOT "auto-trigger on every scrape without threshold".
+This is NOT an auto-trigger on every /scan without the configured threshold.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from linkedin_enrich import (  # noqa: E402
 )
 from tools.job_urls import normalize_job_url  # noqa: E402
 from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
+from tools.fresh_24h.tracker_schema import merge_tracker_headers  # noqa: E402
 from tools.io_utils import atomic_write_json, atomic_write_stream, atomic_write_text  # noqa: E402
 
 # JD full-text cache imports (imported inline in deep_enrich_hit to keep optional)
@@ -402,8 +403,8 @@ def run_two_pass(
     return draft_rows, meta
 
 
-def write_csv(path: Path, rows: list[dict]) -> None:
-    headers = list(SHEET_HEADERS) + [c for c in PASS_EXTRA if c not in SHEET_HEADERS]
+def write_csv(path: Path, rows: list[dict], *, repo: Path = REPO) -> None:
+    headers = merge_tracker_headers(SHEET_HEADERS, repo, additional=PASS_EXTRA)
     # also keep any extra keys
     path.parent.mkdir(parents=True, exist_ok=True)
     def write_rows(f):
@@ -519,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         out = csv_path.with_name(f"{stem}_twopass_scored.csv")
     else:
         out = out.expanduser().resolve()
-    write_csv(out, rows)
+    write_csv(out, rows, repo=repo)
 
     meta_path = out.with_suffix(".json")
     meta["baseline_max"] = baseline

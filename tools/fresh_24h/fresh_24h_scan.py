@@ -120,6 +120,10 @@ class JobHit:
     teaser: str
     query_id: str
     track_hint: str
+    # Portal cards such as LinkedIn often expose only YYYY-MM-DD. Keep that
+    # precision so an hour-sized temp window does not mistake midnight for the
+    # publication time.
+    date_precision: str = "timestamp"  # timestamp | day | unknown
     age_hours: float | None = None
     decision: str = "new"  # new | reject | duplicate
     soft_flags: list[str] = field(default_factory=list)
@@ -291,6 +295,12 @@ def card_to_hit(
     teaser = str(card.get("teaser") or "").strip()
     posted_raw = card.get("date")
     posted_dt = parse_posted(posted_raw)
+    date_precision = "unknown"
+    if posted_raw:
+        raw_date = str(posted_raw).strip()
+        date_precision = (
+            "day" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date) else "timestamp"
+        )
     posted_at = None
     if posted_dt:
         posted_at = posted_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -309,6 +319,7 @@ def card_to_hit(
         teaser=teaser[:400],
         query_id=query_id,
         track_hint=track_hint,
+        date_precision=date_precision,
     )
 
 
@@ -327,6 +338,13 @@ def apply_recency(
         limit = max_hours
         if portal == "jobsdb" and jobsdb_client_hours is not None:
             limit = jobsdb_client_hours
+        if portal == "linkedin" and hit.date_precision == "day" and limit < 24:
+            # A date-only card cannot support an hour-level rejection. The
+            # portal's coarse jobage filter and URL/seen dedupe still protect
+            # against most stale results; retain the row with an explicit flag
+            # instead of silently dropping today's postings.
+            hit.soft_flags.append("date_precision_day")
+            return
         if age > limit:
             hit.decision = "reject"
             hit.reject_reason = f"older_than_{limit:.0f}h (age={age:.1f}h)"

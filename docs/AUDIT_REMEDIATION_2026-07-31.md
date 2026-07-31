@@ -8,8 +8,8 @@ Baseline: `docs/AUDIT_REPORT_2026-07-31.md`
 
 All identified high-, medium- and low-risk source issues were fixed or reduced to
 an explicit fail-closed boundary. The current product source passes its release
-guards and regression suite. A reviewed clean-history snapshot is now published
-on `main`, `master` and `public-release`; the user's private workspace remains
+guards and regression suite. The reviewed release commit is intended for
+`main`, `master` and `public-release`; the user's private workspace remains
 local and ignored.
 
 ## Closed high-risk issues
@@ -66,17 +66,17 @@ local and ignored.
 
 - Python 3.12 temporary environment installed from `requirements-dev.lock`.
 - `setup.py --doctor-json`: ready, no failed checks.
-- Python: 126 tests passed.
+- Python: 136 tests passed.
 - Four portal CLIs: typecheck passed; LinkedIn 20 tests, FreeHire 29, JobsDB 6
   plus 2 opt-in live skips, CTgoodjobs 6 plus 2 opt-in live skips.
 - Skill/command lint, compileall, security guard, tracked/private query
   validation and `git diff --check`: passed.
 - `public_release_check.py --source`: passed.
 - `public_release_check.py --history`: passed in the clean release snapshot.
-- Clean-clone synthetic E2E: setup generated a private profile/tracker, a portal-
-  disabled scan completed without advancing the cursor, company research and JD
-  preflight completed, a fact-checked A-lane tailor plan was produced, and
-  LibreOffice headless exported a synthetic CV PDF.
+- Clean-clone synthetic E2E: setup generated a private profile/tracker, a selected
+  tracker row created a material package, a complete user-pasted JD was preserved,
+  company research and JD preflight completed, and a fact-checked A-lane tailor
+  plan was produced.
 
 ## Remaining release conditions
 

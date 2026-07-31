@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Headless DOCX → PDF for cross-industry application packages.
 
-Fully background—no WPS, GUI or Accessibility clicks. Supports CVs and cover
-letters using:
-  1) LibreOffice soffice --headless
-  2) Spire.Doc fallback
+Fully background—no WPS, GUI or Accessibility clicks. LibreOffice
+`soffice --headless` is the documented path. Spire.Doc is an explicit fallback
+only when LibreOffice is unavailable.
 
 Usage:
   python3 tools/fresh_24h/docx_to_pdf.py path/to/file.docx
@@ -43,7 +42,7 @@ def write_conversion_stamp(docx: Path, pdf: Path, *, engine: str) -> None:
         _conversion_stamp_path(Path(pdf)),
         {
             "source_sha256": _source_hash(Path(docx)),
-            "engine": (engine or "auto").lower(),
+            "engine": (engine or "libreoffice").lower(),
             "policy": "jobsflow-one-page-v1",
         },
     )
@@ -57,7 +56,7 @@ def conversion_cache_hit(docx: Path, pdf: Path, *, engine: str) -> bool:
         value = json.loads(stamp.read_text(encoding="utf-8"))
         return (
             value.get("source_sha256") == _source_hash(Path(docx))
-            and value.get("engine") == (engine or "auto").lower()
+            and value.get("engine") == (engine or "libreoffice").lower()
             and value.get("policy") == "jobsflow-one-page-v1"
         )
     except (OSError, ValueError, TypeError):
@@ -186,7 +185,7 @@ def _content_bbox(page) -> tuple[float, float, float, float] | None:
     return (min(xs0), min(ys0), max(xs1), max(ys1))
 
 
-def strip_eval_and_fit_one_page(src_pdf: Path, dst_pdf: Path) -> int:
+def strip_eval_warning_one_page(src_pdf: Path, dst_pdf: Path) -> int:
     import fitz
 
     doc = fitz.open(str(src_pdf))
@@ -202,67 +201,12 @@ def strip_eval_and_fit_one_page(src_pdf: Path, dst_pdf: Path) -> int:
                 page.add_redact_annot(r, fill=(1, 1, 1))
         page.apply_redactions()
 
-    if doc.page_count > 1:
-        w, h = doc[0].rect.width, doc[0].rect.height
-        p1_text = (doc[1].get_text("text") or "").strip()
-        p1_text = (
-            p1_text.replace("Evaluation Warning", "")
-            .replace("Spire.Doc for Python", "")
-            .strip()
-        )
-        new = fitz.open()
-        page = new.new_page(width=w, height=h)
-        if not p1_text:
-            page.show_pdf_page(page.rect, doc, 0)
-        else:
-            blocks = doc[1].get_text("blocks")
-            if blocks:
-                y1_max = max(b[3] for b in blocks)
-                y1_min = min(b[1] for b in blocks)
-                overflow_h = max(20, y1_max - y1_min + 20)
-            else:
-                overflow_h = 80
-            total = h + overflow_h
-            scale = min(0.98, h / total)
-            page.show_pdf_page(fitz.Rect(0, 0, w, h * scale), doc, 0)
-            page.show_pdf_page(
-                fitz.Rect(0, h * scale * 0.98, w, h),
-                doc,
-                1,
-                clip=fitz.Rect(0, 0, w, overflow_h + 40),
-            )
-        tmp = Path("/tmp") / f"fit1_{src_pdf.stem}.pdf"
-        new.save(str(tmp))
-        new.close()
+    if doc.page_count != 1:
+        count = doc.page_count
         doc.close()
-        doc = fitz.open(str(tmp))
-
-    page0 = doc[0]
-    w, h = page0.rect.width, page0.rect.height
-    bbox = _content_bbox(page0)
-    if bbox is not None:
-        x0, y0, x1, y1 = bbox
-        margin = 36.0
-        target = fitz.Rect(margin, margin, w - margin, h - margin)
-        content_h = max(1.0, y1 - y0)
-        avail_h = target.height
-        empty_ratio = max(0.0, (h - y1) / h)
-        if empty_ratio > 0.12 and content_h < avail_h * 0.98:
-            scale = min(avail_h / content_h, 1.18)
-            content_w = max(1.0, x1 - x0)
-            new_w = content_w * scale
-            new_h = content_h * scale
-            dest_x0 = target.x0 + max(0, (target.width - new_w) / 2)
-            dest = fitz.Rect(dest_x0, target.y0, dest_x0 + new_w, target.y0 + new_h)
-            clip = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2)
-            out = fitz.open()
-            op = out.new_page(width=w, height=h)
-            op.show_pdf_page(dest, doc, 0, clip=clip)
-            out.save(str(dst_pdf))
-            n = out.page_count
-            out.close()
-            doc.close()
-            return n
+        raise RuntimeError(
+            f"PDF has {count} pages; adjust DOCX spacing/content instead of scaling or overlaying pages"
+        )
 
     doc.save(str(dst_pdf))
     n = doc.page_count
@@ -283,7 +227,7 @@ def convert_spire(docx: Path, pdf: Path) -> bool:
     doc.LoadFromFile(str(dense))
     doc.SaveToFile(str(raw), FileFormat.PDF)
     doc.Close()
-    strip_eval_and_fit_one_page(raw, pdf)
+    strip_eval_warning_one_page(raw, pdf)
     return pdf.exists() and pdf.stat().st_size > 5000
 
 
@@ -291,13 +235,13 @@ def convert(
     docx: Path,
     pdf: Path | None = None,
     *,
-    engine: str = "auto",
+    engine: str = "libreoffice",
     force: bool = False,
 ) -> Path:
     """Convert DOCX → PDF. engine: auto | libreoffice | spire."""
     docx = docx.resolve()
     pdf = (pdf or docx.with_suffix(".pdf")).resolve()
-    engine = (engine or "auto").lower()
+    engine = (engine or "libreoffice").lower()
     if not force and conversion_cache_hit(docx, pdf, engine=engine):
         print(f"OK cached (source unchanged): {pdf}")
         return pdf
@@ -323,7 +267,7 @@ def convert(
     raise RuntimeError(f"No headless converter available for {docx}")
 
 
-def convert_package_dir(d: Path, *, engine: str = "auto", force: bool = False) -> None:
+def convert_package_dir(d: Path, *, engine: str = "libreoffice", force: bool = False) -> None:
     files = sorted(d.glob("*CV.docx")) + sorted(d.glob("*Cover Letter.docx"))
     if not files:
         files = [p for p in sorted(d.glob("*.docx")) if not p.name.startswith("~$")]
@@ -333,15 +277,15 @@ def convert_package_dir(d: Path, *, engine: str = "auto", force: bool = False) -
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        description="Headless DOCX→PDF (LibreOffice or Spire). Never launches WPS."
+        description="Headless DOCX→PDF (LibreOffice first; explicit Spire fallback). Never launches WPS."
     )
     ap.add_argument("docx", nargs="?", type=Path)
     ap.add_argument("--package-dir", type=Path)
     ap.add_argument(
         "--engine",
         choices=("auto", "libreoffice", "spire"),
-        default="auto",
-        help="auto: LO if installed else Spire (default). Force with libreoffice|spire.",
+        default="libreoffice",
+        help="libreoffice: documented/default path; use auto or spire only as an explicit fallback.",
     )
     ap.add_argument(
         "--force",

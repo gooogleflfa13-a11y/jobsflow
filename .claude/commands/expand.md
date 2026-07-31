@@ -166,17 +166,20 @@ Wait for the user's response before writing anything.
 
 ## Step 5: Write Confirmed Additions
 
-Apply only the confirmed items. Use the Edit tool to add to the relevant sections of each file — do not rewrite entire files.
+Apply only the confirmed items. Write them to the gitignored personal workspace
+(`JobSearch_2026/00_Profile/expanded_competencies.md`) or to the selected
+application archive. Do not edit tracked `.claude/skills/` templates, `CLAUDE.md`,
+or product instructions, and do not rewrite an entire file.
 
-### Additions to `01-candidate-profile.md`
-- Technical skills (primary and secondary) → append to the Technical Skills section
-- Domain knowledge → append to the Domain Knowledge or Technical Skills section (match the existing structure)
+### Additions to the private profile evidence record
+- Technical skills (primary and secondary) → append to the private evidence record
+- Domain knowledge → append to the private evidence record
 - Methods and practices → append appropriately
 
 For each addition, add a brief source annotation in a comment or parenthetical: *(Coursera — Deep Learning Specialisation)*, *(GitHub — project-name)*, etc. This makes future `/expand` runs idempotent.
 
-### Additions to `02-behavioral-profile.md`
-- Soft/behavioral signals → append to the "Strongest Behavioral Traits" or "How I Work Best" section (match existing structure)
+### Additions to the private behavioral evidence record
+- Soft/behavioral signals → append to the private record, not the tracked template
 - Always label inferred behavioral additions: *[Inferred from reference letter — Name / review before relying on this]*
 
 ---
@@ -188,10 +191,10 @@ After writing, present:
 ```
 ## /expand Complete
 
-### Added to 01-candidate-profile.md
+### Added to private profile evidence
 [List each competency added, with source]
 
-### Added to 02-behavioral-profile.md
+### Added to private behavioral evidence
 [List each behavioral signal added, with source]
 
 ### Sources processed

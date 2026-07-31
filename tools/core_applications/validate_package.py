@@ -14,10 +14,8 @@ REQUIRED_FILES = (
     ("job_snapshot.md", "job_snapshot.md"),
     ("申请指南.md", "申请指南.md"),
     ("application_log.md", "application_log.md"),
-    ("CV.tex", "*_CV.tex"),
     ("CV.pdf", "*_CV.pdf"),
     ("CV.docx", "*_CV.docx"),
-    ("Cover_Letter.tex", "*_Cover_Letter.tex"),
     ("Cover_Letter.pdf", "*_Cover_Letter.pdf"),
     ("Cover_Letter.docx", "*_Cover_Letter.docx"),
 )
@@ -116,13 +114,23 @@ def _required_paths(package_dir: Path) -> tuple[list[Path], list[str]]:
 
 
 def validate_package(package_dir: Path, company: str, role: str) -> list[str]:
-    """Return package contract violations; an empty list means validation passed."""
+    """Return package contract violations; an empty list means validation passed.
+
+    DOCX and one-page PDF are the product contract.  A legacy ``.tex`` source,
+    when present, is still scanned for banned wording but is never required.
+    """
     package_dir = Path(package_dir)
     paths, errors = _required_paths(package_dir)
     for path in paths:
         if path.suffix.lower() == ".pdf":
             errors.extend(_validate_pdf(path))
         else:
+            errors.extend(_validate_text(path, company, role))
+    # Keep legacy source files safe without making a LaTeX toolchain a release
+    # prerequisite.  This also catches stale wording when a user keeps an old
+    # source beside the current DOCX/PDF materials.
+    for path in sorted(package_dir.glob("*.tex")):
+        if path not in paths:
             errors.extend(_validate_text(path, company, role))
     return errors
 

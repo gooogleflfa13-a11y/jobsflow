@@ -24,12 +24,19 @@ PKG='JobSearch_2026/01_Masters/A_core/核心/A0-005_未投_Example'
 python3 -m tools.job_materials pipeline --package "$PKG" --lane A
 ```
 
-If the JD is missing:
+You may resolve a selected job directly from a local tracker row; the first
+`--job-id` call creates the package and `job_snapshot.md` automatically under
+`01_Masters/<direction>/<tier>/`. It does not invent a JD. If the JD is missing,
+address the selected row directly (the package is created or reused):
 
 ```bash
 python3 -m tools.job_materials jd set \
-  --package "$PKG" --file ./jd.txt
+  --job-id A0-005 --file ./jd.txt
 ```
+
+The same package creation happens for `/materials <job-id>` and `/apply <job-id>`
+when the row exists in a local main CSV or scored local export. If no local row is
+available, run `/push --local-only` (or `/push --also-local`) first.
 
 If application preflight asks for salary, availability, authorization or another
 explicit input:
@@ -77,6 +84,11 @@ python3 -m tools.job_materials company set \
 `tailor_plan.json.low_model_contract` defines the required execution order so a
 less capable model cannot skip preflight, company research, evidence mapping,
 fact checking or PDF validation.
+
+The pipeline exits non-zero while the quality gate is blocked (for example when
+company sources or candidate evidence are missing). It still writes the request
+and plan artifacts so the next action is explicit; do not draft final materials
+until `quality_gate.ready_for_drafting` is true.
 
 ## PDF
 

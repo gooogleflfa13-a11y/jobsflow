@@ -19,16 +19,21 @@ def _read(path: Path) -> str:
 
 
 def load_evidence_blob(root: Path, lane: str | None = None) -> str:
-    """Concatenate profile + master_bullets + lane skeletons for grounding."""
+    """Concatenate profile + runtime résumé + lane masters for grounding."""
     parts: list[str] = []
     pd = profile_dir(root)
     for name in (
         "master_bullets.md",
         "ai_skill_line.txt",
-        "facts_待确认清单_2026-07-26.md",
         "README.md",
     ):
         parts.append(_read(pd / name))
+    # Setup writes the user's imported CV here.  Keep the glob date-agnostic so
+    # a fresh clone never depends on a historical private filename.
+    parts.append(_read(pd / "resume_runtime" / "resume.txt"))
+    for facts_path in sorted(pd.glob("facts_*")):
+        if facts_path.is_file():
+            parts.append(_read(facts_path))
 
     md = masters_dir(root)
     lanes = load_lanes(root)
@@ -71,6 +76,14 @@ def lane_seed_bullets(root: Path, lane: str) -> list[str]:
     """Prefer master_bullets + lane skeleton for base material pool."""
     blob = load_evidence_blob(root, lane=lane)
     bullets = extract_bullets_from_markdown(blob)
+    # Plain-text/PDF imports often have no Markdown bullets.  Treat substantive
+    # paragraphs as evidence candidates while retaining the same fact-check
+    # gate; no claim is invented, it is copied from the imported résumé.
+    resume_text = _read(profile_dir(root) / "resume_runtime" / "resume.txt")
+    for paragraph in re.split(r"\n\s*\n|\n", resume_text):
+        candidate = re.sub(r"\s+", " ", paragraph).strip(" -*•\t")
+        if len(candidate) > 40 and candidate not in bullets:
+            bullets.append(candidate)
     # also pull module section from master_bullets if tagged
     mb = _read(profile_dir(root) / "master_bullets.md")
     bullets.extend(extract_bullets_from_markdown(mb))

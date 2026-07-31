@@ -38,7 +38,7 @@ PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v pytho
 "$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
 "$PYTHON_BIN" -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.lock
+python3 -m pip install --require-hashes -r requirements.lock
 python3 setup.py --doctor
 python3 setup.py --resume-folder ~/Documents/my-cv
 python3 setup.py --install-portals
@@ -48,7 +48,7 @@ Then use:
 
 ```text
 /scan
-/push
+/push (or /push --local-only for a CSV-only tracker)
 /materials C0-005 C
 /apply C0-005 C
 ```

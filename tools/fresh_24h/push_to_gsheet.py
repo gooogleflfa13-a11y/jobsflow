@@ -57,6 +57,12 @@ from linkedin_enrich import (  # noqa: E402
 from two_pass_score import PASS_EXTRA, run_two_pass  # noqa: E402
 from tools.job_urls import normalize_job_url  # noqa: E402
 from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
+from tools.fresh_24h.tracker_schema import merge_tracker_headers  # noqa: E402
+from tools.fresh_24h.local_tracker import (  # noqa: E402
+    latest_tracker_path,
+    merge_scored_rows,
+    read_tracker,
+)
 from tools.io_utils import atomic_write_stream, atomic_write_text  # noqa: E402
 from tools.spreadsheet_safety import neutralize_spreadsheet_formula  # noqa: E402
 
@@ -511,6 +517,67 @@ def _persist_deep_jds(rows: list[dict], repo: Path) -> None:
         print(f"JD cache: wrote {n} deep JD(s) to {cache_dir}")
 
 
+def push_local_only(
+    *,
+    csv_path: Path,
+    hits: list[dict],
+    min_score: float,
+    max_deep: int,
+    enrich_sleep: float,
+    mode: str,
+    legacy_single_pass: bool,
+) -> int:
+    """Score and merge a selection into the local main CSV without Sheets."""
+    tracker_path = latest_tracker_path(REPO, SHEET_HEADERS)
+    _, existing_rows = read_tracker(tracker_path)
+    baseline = max_prefix_from_ids([row.get("岗位编号") or "" for row in existing_rows])
+    existing_urls = {
+        normalize_job_url(row.get("链接") or "", source=row.get("来源") or "")
+        for row in existing_rows
+        if row.get("链接")
+    }
+    hits_new = []
+    for hit in hits:
+        url = _normalize_hit_url(hit)
+        if url and url in existing_urls:
+            continue
+        hits_new.append(hit)
+
+    if legacy_single_pass:
+        rows, meta = score_new_hits(
+            hits_new,
+            min_score=min_score,
+            baseline_max=baseline,
+            existing_urls=existing_urls,
+            enrich_shallow=True,
+            enrich_sleep=enrich_sleep,
+            repo=REPO,
+        )
+    else:
+        rows, meta = run_two_pass(
+            hits_new,
+            gate_pass1=min_score,
+            min_final=min_score,
+            repo=REPO,
+            sleep_s=enrich_sleep,
+            max_deep=max_deep,
+        )
+        allocate_ids(rows, baseline_max=baseline)
+        _persist_deep_jds(rows, REPO)
+
+    path, added = merge_scored_rows(
+        REPO,
+        rows,
+        base_headers=SHEET_HEADERS,
+        pass_extra=PASS_EXTRA if not legacy_single_pass else (),
+        mode=mode,
+    )
+    suffix = "scored" if legacy_single_pass else "twopass_scored"
+    print(f"local-only: merged {added} new row(s) into {path}")
+    print(f"local-only: source={csv_path.name} mode={meta.get('mode', 'two_pass')}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Push fresh_24h to Google Sheet (中文+CareerOps)")
     ap.add_argument("--csv", type=Path, default=None)
@@ -530,6 +597,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--no-merge", action="store_true", help="Do not merge; same as full rewrite of scored CSV only")
     ap.add_argument("--also-local", action="store_true")
+    ap.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Score and update the local main CSV without Google Sheets credentials",
+    )
     ap.add_argument(
         "--min-score",
         type=float,
@@ -589,20 +661,6 @@ def main(argv: list[str] | None = None) -> int:
         merge = True
     enrich_shallow = bool(args.enrich_linkedin) and not bool(args.no_enrich_linkedin)
 
-    cred = args.credentials or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not cred:
-        print("ERROR: --credentials or GOOGLE_APPLICATION_CREDENTIALS", file=sys.stderr)
-        return 2
-    cred_path = Path(cred).expanduser()
-    if not cred_path.exists():
-        print(f"ERROR: credentials not found: {cred_path}", file=sys.stderr)
-        return 2
-
-    sheet_id = args.sheet_id or os.environ.get("GSHEET_ID")
-    if not sheet_id:
-        print("ERROR: --sheet-id or GSHEET_ID", file=sys.stderr)
-        return 2
-
     tracker = REPO / "JobSearch_2026" / "02_Tracker"
     csv_path = args.csv.expanduser().resolve() if args.csv else latest_fresh_csv(tracker)
     if not csv_path or not csv_path.exists():
@@ -628,6 +686,31 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         except (json.JSONDecodeError, OSError, ValueError):
             pass
+
+    if args.local_only:
+        return push_local_only(
+            csv_path=csv_path,
+            hits=hits,
+            min_score=args.min_score,
+            max_deep=args.max_deep,
+            enrich_sleep=args.enrich_sleep,
+            mode=args.mode,
+            legacy_single_pass=not use_two_pass,
+        )
+
+    cred = args.credentials or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not cred:
+        print("ERROR: --credentials or GOOGLE_APPLICATION_CREDENTIALS", file=sys.stderr)
+        return 2
+    cred_path = Path(cred).expanduser()
+    if not cred_path.exists():
+        print(f"ERROR: credentials not found: {cred_path}", file=sys.stderr)
+        return 2
+
+    sheet_id = args.sheet_id or os.environ.get("GSHEET_ID")
+    if not sheet_id:
+        print("ERROR: --sheet-id or GSHEET_ID", file=sys.stderr)
+        return 2
 
     try:
         import gspread
@@ -750,11 +833,11 @@ def main(argv: list[str] | None = None) -> int:
     combined = existing_rows + new_rows
     combined = sort_fresh_rows(combined)
 
-    headers = list(SHEET_HEADERS)
-    if use_two_pass:
-        for c in PASS_EXTRA:
-            if c not in headers:
-                headers.append(c)
+    headers = merge_tracker_headers(
+        SHEET_HEADERS,
+        REPO,
+        additional=PASS_EXTRA if use_two_pass else (),
+    )
     # Also keep any extra columns that existing rows already have (beyond known sets)
     extra_from_existing: list[str] = []
     for r in existing_rows:

@@ -51,6 +51,13 @@ def _zh_role_label(title: str) -> str:
         (r"product manager|product owner", "产品管理"),
         (r"financial analyst|\bfp&a\b", "财务分析"),
         (r"marketing|growth|brand|content", "市场/增长"),
+        (r"operations?|operational", "运营/流程"),
+        (r"project manager|program manager|programme manager", "项目/项目群管理"),
+        (r"sales|account executive|business development", "销售/业务拓展"),
+        (r"human resources|\bhr\b|recruiter|talent", "人力资源/招聘"),
+        (r"customer success|customer support|service delivery", "客户成功/服务交付"),
+        (r"accountant|accounting|finance manager", "会计/财务"),
+        (r"designer|ux|ui", "设计/用户体验"),
         (r"kyc|cdd|know your customer", "KYC/客户尽职调查合规"),
         (r"financial crime|aml", "反洗钱/金融犯罪合规"),
         (r"compliance auditor", "合规审计"),
@@ -58,7 +65,7 @@ def _zh_role_label(title: str) -> str:
         (r"compliance analyst", "合规分析"),
         (r"compliance officer", "合规主任/专员"),
         (r"compliance", "合规"),
-        (r"quant|hedge fund", "量化/对冲基金法务"),
+        (r"quant|hedge fund", "量化/对冲基金"),
         (r"legal counsel|counsel", "法律顾问/Counsel"),
         (r"senior lawyer|lawyer", "律师"),
         (r"paralegal|legal executive", "律师助理/法律行政"),
@@ -308,7 +315,8 @@ def score_job(
         text,
         re.I,
     )
-    eligibility = 3.5
+    neutral_scores = profile.get("neutral_scores") if isinstance(profile.get("neutral_scores"), dict) else {}
+    eligibility = float(neutral_scores.get("eligibility", 3.5))
     max_years = profile.get("max_relevant_years")
     required_years = 0
     if years_match:
@@ -325,9 +333,9 @@ def score_job(
         text,
         _clean_keywords(profile.get("schedule_risk_keywords")),
     )
-    work = 2.3 if risk_hits else 3.5
+    work = 2.3 if risk_hits else float(neutral_scores.get("work", 3.5))
 
-    pay = 3.0
+    pay = float(neutral_scores.get("pay", 3.0))
     salary_match = re.search(r"\$?\s*([\d,]+)\s*[–-]\s*\$?\s*([\d,]+)", salary or "")
     minimum_salary = profile.get("minimum_salary")
     if salary_match and isinstance(minimum_salary, (int, float)):

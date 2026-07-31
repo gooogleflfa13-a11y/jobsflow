@@ -64,7 +64,7 @@ def run_cli_with_selector(
 def test_validator_reports_missing_contract(tmp_path: Path):
     errors = validate_package(tmp_path, COMPANY, ROLE)
 
-    assert len(errors) == 9
+    assert len(errors) == 7
     assert any("job_snapshot.md" in error for error in errors)
     assert any("CV.pdf" in error for error in errors)
     assert any("Cover_Letter.docx" in error for error in errors)
@@ -72,6 +72,14 @@ def test_validator_reports_missing_contract(tmp_path: Path):
 
 def test_validator_accepts_complete_package(tmp_path: Path):
     write_valid_package(tmp_path)
+
+    assert validate_package(tmp_path, COMPANY, ROLE) == []
+
+
+def test_validator_accepts_docx_pdf_package_without_latex_sources(tmp_path: Path):
+    write_valid_package(tmp_path)
+    for path in tmp_path.glob("*.tex"):
+        path.unlink()
 
     assert validate_package(tmp_path, COMPANY, ROLE) == []
 

@@ -109,6 +109,16 @@ RESUME_SHAPED_PERSONAL_METRICS = [
     re.compile(r"\b(?:RMB|HKD|USD)\s+\d+(?:\.\d+)?\s*(?:million|m)\b", re.I),
 ]
 
+PERSONAL_CONTACT_PATTERNS = [
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I),
+    re.compile(r"(?<!\d)\+?\d[\d ()-]{7,}\d(?!\d)"),
+]
+
+PERSONAL_TEMPLATE_PATHS = {
+    ".claude/skills/job-application-assistant/01-candidate-profile.md",
+    ".claude/skills/job-application-assistant/02-behavioral-profile.md",
+}
+
 FORBIDDEN_PRODUCT_MARKERS = {
     # High-confidence historical candidate markers. Keep this list explicit:
     # ordinary profession examples (including legal/compliance) are not PII.
@@ -221,6 +231,16 @@ def check_public_templates() -> None:
                     f"{relpath}: resume-shaped personal metric found in public template "
                     f"({pattern.pattern!r}); replace it with a placeholder."
                 )
+        if relpath in PERSONAL_TEMPLATE_PATHS:
+            for pattern in PERSONAL_CONTACT_PATTERNS:
+                for match in pattern.finditer(text):
+                    value = match.group(0)
+                    if "example.com" in value.casefold() or "example.org" in value.casefold():
+                        continue
+                    errors.append(
+                        f"{relpath}: personal contact data found in public template "
+                        f"({value!r}); keep identity only in the gitignored workspace."
+                    )
 
 
 def check_product_source_hygiene() -> None:

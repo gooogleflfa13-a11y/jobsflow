@@ -8,6 +8,7 @@
 /push                        # 默认：门槛 3.3，临时模式
 /push --min-score 3.5        # 自定义门槛
 /push --mode daily           # 日更模式
+/push --local-only           # 不使用 Google Sheets，更新本地主 CSV
 ```
 
 ## 执行步骤
@@ -17,6 +18,16 @@
 ```bash
 python3 tools/fresh_24h/push_to_gsheet.py --also-local --min-score 3.3 --mode temp
 ```
+
+如果 setup 选择了本地 CSV 或暂时没有 Google 凭据：
+
+```bash
+python3 tools/fresh_24h/push_to_gsheet.py --local-only --min-score 3.3 --mode temp
+```
+
+`--local-only` 会把通过两段评分门槛的岗位合并进
+`JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.csv`，保留批次标记和状态，
+不会尝试连接 Google Sheets。
 
 2. 向用户报告：
    - 写入了哪个 tab

@@ -713,6 +713,17 @@ def build_queries_config(
             "track_mapping": dict(profession.get("track_mapping") or {}),
             "track_rules": list(profession.get("track_rules") or []),
             "weights": dict(profession.get("scoring_weights") or {}),
+            # These fields are intentionally explicit so the scorer can remain
+            # neutral when the user has not supplied a constraint, while still
+            # changing eligibility/work/pay dimensions when setup captured one.
+            "minimum_salary": profession.get("minimum_salary"),
+            "max_relevant_years": profession.get("max_relevant_years"),
+            "schedule_risk_keywords": list(profession.get("schedule_risk_keywords") or []),
+            "qualification_keywords": list(profession.get("qualification_keywords") or []),
+            "neutral_scores": dict(
+                profession.get("neutral_scores")
+                or {"eligibility": 3.5, "work": 3.5, "pay": 3.0}
+            ),
             "industry_context": dict(profession.get("industry_context") or {}),
         },
         "queries": queries,
@@ -827,12 +838,46 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
     languages = extract_languages(resume_text)
 
     prof = classify_profession(intent, resume_text)
+    # Parse only explicit, machine-checkable constraints from the user's intent;
+    # missing values stay unknown rather than being guessed from résumé history.
+    intent_lower = str(intent or "").casefold()
+    salary_match = re.search(
+        r"(?:minimum|min|at\s+least|最低|不少于)\D{0,12}(?:hkd|hk\$|usd|rmb|薪资)?\s*([\d,]{3,})",
+        intent_lower,
+    )
+    if salary_match:
+        prof["minimum_salary"] = int(salary_match.group(1).replace(",", ""))
+    max_years_match = re.search(
+        r"(?:up\s+to|no\s+more\s+than|<=|不超过)\s*(\d+)\s*(?:years?|年)",
+        intent_lower,
+    )
+    if max_years_match:
+        prof["max_relevant_years"] = int(max_years_match.group(1))
+    if re.search(r"(?:no|without|avoid|不要|不含).{0,12}(?:evening|night|weekend|shift|晚班|夜班|周末|轮班)", intent_lower):
+        prof["schedule_risk_keywords"] = [
+            "evening",
+            "night",
+            "weekend",
+            "shift",
+            "晚班",
+            "夜班",
+            "周末",
+            "轮班",
+        ]
     prof["evidence_keywords"] = extract_profile_keywords(resume_text)
     prof["preferred_industry_keywords"] = extract_profile_keywords(intent, limit=16)
     from tools.setup_contract import build_setup_design_request, resolve_setup_design
 
     profile_dir = REPO / "JobSearch_2026" / "00_Profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the imported résumé in the ignored runtime workspace so materials
+    # fact-checking has an evidence source immediately after /setup.  This is
+    # intentionally separate from tracked product templates and master DOCX.
+    resume_runtime = profile_dir / "resume_runtime"
+    resume_runtime.mkdir(parents=True, exist_ok=True)
+    (resume_runtime / "resume.txt").write_text(
+        str(resume_text or "").strip() + "\n", encoding="utf-8"
+    )
     fallback = _setup_design_fallback(prof)
     request = build_setup_design_request(
         intent=intent,
@@ -902,6 +947,7 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
     # tracker_schema.json
     schema = build_tracker_schema(prof)
     schema_path = REPO / "JobSearch_2026" / "02_Tracker" / "tracker_schema.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     ok(f"tracker_schema.json -> {len(schema['columns'])} columns, {len(prof['track_mapping'])} tracks")
     tracker_path = ensure_initial_tracker(

@@ -707,6 +707,13 @@ def write_materials_status(
             "application preflight is not complete — "
             f"ask user: {qids or '—'}; verify profile: {rids or '—'}"
         )
+    quality_gate = payload.get("quality_gate") or {}
+    if quality_gate and not quality_gate.get("ready_for_drafting", True):
+        blockers = ", ".join(str(item) for item in quality_gate.get("blockers") or [])
+        issues.append(
+            "quality gate is not ready for drafting — complete the source/evidence "
+            f"checks first ({blockers or 'see tailor_plan.json'})"
+        )
 
     next_steps = []
     if issues:
@@ -751,6 +758,7 @@ def write_materials_status(
         f"- jd_full.md: {'yes' if (package / 'jd_full.md').exists() else 'no'}",
         f"- application_preflight.md/json: {'yes' if (package / 'application_preflight.json').exists() else 'no'}",
         f"- ready_for_apply: {preflight.get('ready_for_apply')}",
+        f"- ready_for_drafting: {(payload.get('quality_gate') or {}).get('ready_for_drafting')}",
         "",
     ]
     if enrich_notes:
@@ -773,7 +781,7 @@ def write_materials_status(
     lines += [
         "",
         "## Honesty",
-        "- Scan two-pass (`fresh_24h`) is **separate**; materials never auto-run on scrape.",
+        "- Scan two-pass (`fresh_24h`) is **separate**; materials never auto-run on /scan.",
         "- Deep full JD is reliable mainly for **LinkedIn**; CT/JobsDB need paste (`jd set`).",
         "- Plan reorders fact-checked base toward JD keywords — **emphasis, not freestyle**.",
         "",
@@ -789,6 +797,7 @@ def package_quality_exit_code(payload: dict[str, Any], package: Path, root: Path
     1 = base factcheck not passed
     2 = JD stub/shallow
     3 = both
+    4 = source/evidence quality gate not ready for drafting
     """
     fc = payload.get("base_factcheck")
     meta = jd_meta(package, root)
