@@ -67,6 +67,14 @@ industry context. The proposal is constrained by a machine-readable schema and
 is written only to the private workspace; invalid output falls back to the
 deterministic cross-industry configuration.
 
+Job intent can evolve safely after setup. Use `/intent add ...` to add a
+direction or `/intent replace ...` to replace the search scope. JobsFlow turns
+the natural-language update into role and industry keywords and shows a preview
+first; only an explicit `/intent confirm` writes the private search
+configuration. The next `/scan` uses the new configuration, while historical
+tracker rows and existing materials remain unchanged. If it is unclear whether
+the user wants to add or replace a direction, the assistant asks first.
+
 `/scan` defaults to the period since the last successful refresh. Use `/scan daily` for 24 hours or `/scan 3` for three hours. A failed portal run does not advance the refresh cursor.
 
 ## Materials

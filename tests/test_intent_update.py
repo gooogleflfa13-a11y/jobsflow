@@ -1,0 +1,98 @@
+import json
+
+import pytest
+
+from tools.update_intent import apply_proposal, create_proposal, save_proposal
+
+
+def _write_private_profile(root):
+    profile = root / "JobSearch_2026" / "00_Profile"
+    profile.mkdir(parents=True)
+    (profile / "resume_runtime").mkdir()
+    (profile / "resume_runtime" / "resume.txt").write_text(
+        "Built Python APIs for payment services.\n", encoding="utf-8"
+    )
+    (profile / "queries.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "setup_required": False,
+                "location_linkedin": "Hong Kong",
+                "query_policy": {"mandatory_buckets": ["core_target_roles", "adjacent_target_roles", "exploration_roles"]},
+                "relevance_keywords": ["backend"],
+                "adjacent_keywords": ["cloud"],
+                "queries": [
+                    {
+                        "id": "backend",
+                        "bucket": "core_target_roles",
+                        "track_hint": "A",
+                        "terms": {"linkedin": "backend engineer", "jobsdb": "backend engineer", "ctgoodjobs": "backend engineer"},
+                    }
+                ],
+                "portals": {},
+                "scoring_profile": {
+                    "domain": "technology",
+                    "core_keywords": ["backend"],
+                    "adjacent_keywords": ["cloud"],
+                    "evidence_keywords": ["python"],
+                    "preferred_industry_keywords": ["technology"],
+                    "weights": {"resume": 0.35, "eligibility": 0.2, "direction": 0.2, "industry": 0.1, "work": 0.1, "pay": 0.05},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return profile
+
+
+def test_add_is_preview_only_until_confirmation(tmp_path):
+    profile = _write_private_profile(tmp_path)
+    before = (profile / "queries.json").read_text(encoding="utf-8")
+
+    proposal = create_proposal(tmp_path, operation="add", text="也考虑产品运营和数据分析岗位")
+    assert proposal["status"] == "pending_confirmation"
+    assert proposal["recognized_terms"] == ["产品运营", "数据分析"]
+    assert (profile / "queries.json").read_text(encoding="utf-8") == before
+
+    save_proposal(tmp_path, proposal)
+    applied = apply_proposal(tmp_path)
+    assert applied["status"] == "applied"
+    saved = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
+    assert "产品运营" in saved["relevance_keywords"]
+    assert "数据分析" in saved["scoring_profile"]["core_keywords"]
+    assert any(q.get("source") == "confirmed_incremental_intent" for q in saved["queries"])
+    state = json.loads((profile / "intent_state.json").read_text(encoding="utf-8"))
+    assert "产品运营" in state["current_intent"]
+
+
+def test_replace_removes_old_search_scope(tmp_path):
+    _write_private_profile(tmp_path)
+    proposal = create_proposal(tmp_path, operation="replace", text="target data analyst roles")
+    save_proposal(tmp_path, proposal)
+    apply_proposal(tmp_path)
+    saved = json.loads((tmp_path / "JobSearch_2026" / "00_Profile" / "queries.json").read_text(encoding="utf-8"))
+    assert saved["relevance_keywords"] == ["data analyst"]
+    assert all("backend" not in str(q.get("terms")) for q in saved["queries"])
+    assert {q["bucket"] for q in saved["queries"]} == set(saved["query_policy"]["mandatory_buckets"])
+
+
+def test_stale_confirmation_is_rejected(tmp_path):
+    profile = _write_private_profile(tmp_path)
+    proposal = create_proposal(tmp_path, operation="add", text="product operations")
+    save_proposal(tmp_path, proposal)
+    config = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
+    config["relevance_keywords"].append("manual change")
+    (profile / "queries.json").write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="配置已变化"):
+        apply_proposal(tmp_path)
+
+
+def test_add_can_update_explicit_constraints_without_broadening_keywords(tmp_path):
+    profile = _write_private_profile(tmp_path)
+    proposal = create_proposal(tmp_path, operation="add", text="minimum HKD 30000 and no weekend shift")
+    save_proposal(tmp_path, proposal)
+    apply_proposal(tmp_path)
+    saved = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
+    assert saved["scoring_profile"]["minimum_salary"] == 30000
+    assert "weekend" in saved["scoring_profile"]["schedule_risk_keywords"]
+    assert saved["relevance_keywords"] == ["backend"]

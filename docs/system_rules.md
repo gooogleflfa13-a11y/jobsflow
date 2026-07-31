@@ -53,6 +53,20 @@ columns, exceed limits, invent candidate facts or write into tracked product
 configuration. Invalid output keeps the deterministic fallback. An existing
 tracker with data rows is never migrated implicitly.
 
+### Incremental intent changes
+
+After setup, intent changes use the two-phase `tools/update_intent.py` contract:
+
+1. `/intent add ...` or `/intent replace ...` creates a private preview only;
+2. the assistant summarizes recognized role/industry terms and explicit
+   constraints;
+3. only `/intent confirm` writes `queries.json` and `intent_state.json`;
+4. the next `/scan` consumes the confirmed configuration.
+
+Casual conversation must not mutate search scope. A stale preview is rejected if
+the private configuration changed in the meantime. Historical tracker rows and
+existing application materials are not rewritten by an intent update.
+
 ## 4. Search and two-pass scoring
 
 The private setup configuration must contain at least three intent buckets:

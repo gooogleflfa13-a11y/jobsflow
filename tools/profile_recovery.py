@@ -174,15 +174,20 @@ def repair_scoring_profile(
 
     evidence = [str(item).strip() for item in scoring.get("evidence_keywords") or [] if str(item).strip()]
     if force or not evidence:
-        evidence = _evidence_keywords(profile_dir)
-        if evidence:
+        recovered_evidence = _evidence_keywords(profile_dir)
+        # An explicit refresh may rebuild a field, but it must not erase a
+        # previously valid field merely because the source file is temporarily
+        # unavailable (for example, while a user is moving a CV folder).
+        if recovered_evidence:
+            evidence = recovered_evidence
             scoring["evidence_keywords"] = evidence
             changes.append("evidence_keywords")
 
     industries = [str(item).strip() for item in scoring.get("preferred_industry_keywords") or [] if str(item).strip()]
     if force or not industries:
-        industries = _industry_keywords(config, use_existing=not force)
-        if industries:
+        recovered_industries = _industry_keywords(config, use_existing=not force)
+        if recovered_industries:
+            industries = recovered_industries
             scoring["preferred_industry_keywords"] = industries
             changes.append("preferred_industry_keywords")
 

@@ -27,8 +27,11 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from tools.io_utils import atomic_write_json
 
 REPO = Path(__file__).resolve().parent
 
@@ -980,6 +983,25 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
         json.dumps(queries, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    intent_state_path = profile_dir / "intent_state.json"
+    try:
+        previous_state = json.loads(intent_state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        previous_state = {}
+    history = previous_state.get("history") if isinstance(previous_state, dict) else []
+    if not isinstance(history, list):
+        history = []
+    history.append({"operation": "setup", "input": intent, "confirmed_at": datetime.now().isoformat()})
+    atomic_write_json(
+        intent_state_path,
+        {
+            "schema_version": 1,
+            "current_intent": intent,
+            "updated_at": datetime.now().isoformat(),
+            "history": history[-20:],
+        },
+    )
+    ok("intent_state.json -> current intent saved privately")
     ok(
         f"{queries_path.relative_to(REPO)} -> {len(prof['queries'])} queries "
         f"across {len(set(q['bucket'] for q in prof['queries']))} buckets"

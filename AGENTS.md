@@ -11,6 +11,7 @@ All agents (Claude, Cursor, Codex, etc.) must read and obey:
 | `/push` | 推送评分结果到 Google Sheets | 扫描后入表 |
 | `/materials` | 为选定岗位生成投递材料 | 用户点名要投某岗 |
 | `/apply` | 验证材料并进入投递确认（不自动提交） | 材料完成后 |
+| `/intent` | 预览、确认并增量修改求职意向 | 求职方向发生变化时 |
 
 ## /scan 模式
 
@@ -30,6 +31,7 @@ See `docs/system_rules.md` for:
 - Private search buckets and product/personal isolation
 - Two-pass scoring (gate 3.3 -> deep JD -> rescore)
 - Materials decoupled from scan (never auto-generate CV during scan)
+- Intent changes require a preview and explicit confirmation; `/intent add` and `/intent replace` update only the private workspace
 
 ## Tracker defaults
 
