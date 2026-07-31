@@ -63,9 +63,9 @@ deterministic cross-industry configuration.
 
 Materials use a fact-checked A–F base, full-JD cache, and a source-aware company brief. CV emphasis changes with the JD capability themes and company context. Cover letters use verified company facts and a genuine candidate interest angle; unsupported metrics, experience, company claims, or interest are never invented.
 
-A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so lower-capability models follow the same analysis rather than improvising or silently skipping questions.
+A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
 
-DOCX masters remain the source. LibreOffice runs headlessly, both CV and cover letter are one page, and unchanged documents reuse a content-hash PDF cache.
+DOCX masters remain the source. LibreOffice runs headlessly, CVs and cover letters default to one page (unless you explicitly need otherwise), and unchanged documents reuse a content-hash PDF cache.
 
 Example: for a JD asking for experience developing, implementing and monitoring an
 operational program, JobsFlow separates process design, execution and monitoring;
@@ -80,10 +80,11 @@ Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automat
 | LinkedIn | ✓ | ✓ | Deep JD is preferred and cached for reuse |
 | JobsDB | ✓ | Partial | Paste the full JD when preparing materials |
 | CTgoodjobs | ✓ | Partial | Paste the full JD when preparing materials |
-| FreeHire | ✓ | — | Additional job source |
-| Google Sheets | — | — | Optional tracker sync; local CSV remains available |
+| FreeHire | ✓ | Manual | Additional job source; detail can be queried by posting ID |
 
 The default workflow is local-first. Data leaves the machine only when you explicitly enable Google Sheets, an external LLM, or a portal request. Review each service’s terms and privacy policy. JobsFlow never auto-submits an application.
+Google Sheets is not a job source; it is an optional tracker-sync destination. Local CSV tracking works without it.
+LinkedIn accepts a user-specified location; the current JobsDB and CTgoodjobs integrations target Hong Kong; FreeHire covers multiple markets but its strongest filtering is currently technical roles.
 
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
 
@@ -96,8 +97,8 @@ tracker headers, scoring weights, and material priorities from that user's inten
 legal/compliance is not a built-in default.
 
 Deterministic preflight, schema validation, scoring gates, source checks, evidence
-mapping, coverage checks, and PDF checks remain in force even with a lower-capability
-model. A stronger model improves research and wording, but cannot bypass the safety
+mapping, coverage checks, and PDF checks remain in force even with a model of limited
+capability. A stronger model improves research and wording, but cannot bypass the safety
 boundaries or invent facts.
 
 Before publishing a reviewed snapshot, run:
@@ -117,7 +118,7 @@ See [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md) for release hygiene and history handl
 **Can I use it outside legal or compliance?** Yes. Setup generates directions and
 tracker headers from your target industry; legal/compliance is not a default.
 
-**Does it work with lower-capability models?** Yes. Models improve research and
+**Does it work with models with different capability levels?** Yes. Models improve research and
 wording, while deterministic checks enforce the important boundaries.
 
 **Does it upload my CV?** Not by default. Data leaves the machine only when you
