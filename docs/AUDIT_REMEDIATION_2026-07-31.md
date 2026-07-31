@@ -8,9 +8,9 @@ Baseline: `docs/AUDIT_REPORT_2026-07-31.md`
 
 All identified high-, medium- and low-risk source issues were fixed or reduced to
 an explicit fail-closed boundary. The current product source passes its release
-guards and regression suite. The existing Git repository must still not be made
-public because its old history contains private workspace paths and oversized
-browser binaries; publication must use a new clean-history snapshot.
+guards and regression suite. A reviewed clean-history snapshot is now published
+on `main`, `master` and `public-release`; the user's private workspace remains
+local and ignored.
 
 ## Closed high-risk issues
 
@@ -72,17 +72,16 @@ browser binaries; publication must use a new clean-history snapshot.
 - Skill/command lint, compileall, security guard, tracked/private query
   validation and `git diff --check`: passed.
 - `public_release_check.py --source`: passed.
-- `public_release_check.py --history`: intentionally fails on old private paths,
-  oversized historical blobs and the uncommitted working tree.
+- `public_release_check.py --history`: passed in the clean release snapshot.
+- Clean-clone synthetic E2E: setup generated a private profile/tracker, a portal-
+  disabled scan completed without advancing the cursor, company research and JD
+  preflight completed, a fact-checked A-lane tailor plan was produced, and
+  LibreOffice headless exported a synthetic CV PDF.
 
 ## Remaining release conditions
 
-1. Review and commit the repaired source as a clean snapshot.
-2. Create a new public repository/history from that snapshot; do not push the
-   current historical objects.
-3. Run CI from the new repository and complete one clean-clone setup/scan/material
-   smoke run with synthetic data.
-4. Configure branch protection and private security reporting on the public
-   host.
+1. Change GitHub repository visibility to Public when ready.
+2. Configure hosted CI, branch protection and private security reporting on the
+   public host.
 
 See `PUBLIC_RELEASE.md` and `docs/PUBLIC_READINESS_2026-07-31.md`.

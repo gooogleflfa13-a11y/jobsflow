@@ -202,7 +202,9 @@ cd jobsflow
 ### 2. 安装
 
 ```bash
-python3 -m venv .venv
+PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v python3)"
+"$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
+"$PYTHON_BIN" -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.lock
 python3 setup.py --doctor
