@@ -86,6 +86,33 @@ setup 生成行业相关的搜索词、表头和评分规则
 Google Sheets 不是求职网站，而是可选的投递台账同步方式；不启用时可使用本地 CSV。
 LinkedIn 可按用户指定地点检索；JobsDB 与 CTgoodjobs 的当前接入面向香港市场；FreeHire 覆盖多地，但筛选能力目前更偏技术岗位。
 
+## 📁 文件夹 + 台账：一套可迁移的求职资料系统
+
+JobsFlow 不把所有东西塞进表格或聊天记录，而是用两层结构管理求职：**文件夹管理材料和证据，CSV/Google Sheets 管理岗位和状态**。
+
+```text
+JobSearch_2026/
+├── 00_Profile/                    # 简历事实、求职意向、搜索配置
+├── 01_Masters/                   # 按 A-F 方向保存基础 CV / Cover Letter
+│   └── <方向>/<层级>/<岗位编号_公司>/
+│       ├── jd_full.md             # 完整 JD
+│       ├── company_research.md    # 公司性质、主营业务、来源
+│       ├── application_preflight.json
+│       ├── tailor_plan.md         # JD → 候选人证据映射
+│       └── CV / Cover Letter / PDF
+├── 02_Tracker/                   # CSV 台账、JD 缓存、扫描结果
+└── 03_Applications/              # 可选的最终投递归档
+```
+
+| 内容 | 文件夹 | CSV / Google Sheets |
+|------|:------:|:------------------:|
+| JD、公司研究、证据映射 | ✓ | — |
+| CV、Cover Letter、PDF | ✓ | — |
+| 匹配分、优先级、投递状态 | — | ✓ |
+| 材料版本与修改记录 | ✓ | 可记录链接 |
+
+每个岗位编号都能把台账行和材料包对应起来。这样你可以备份整个个人工作区、追溯每个判断，也可以在不使用 Google Sheets 时完全依靠本地 CSV；Google Sheets 只是可选的台账同步，不是 CV 或 Cover Letter 的存储位置。
+
 ---
 
 ## 💡 每一步帮你解决什么

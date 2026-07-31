@@ -86,6 +86,37 @@ The default workflow is local-first. Data leaves the machine only when you expli
 Google Sheets is not a job source; it is an optional tracker-sync destination. Local CSV tracking works without it.
 LinkedIn accepts a user-specified location; the current JobsDB and CTgoodjobs integrations target Hong Kong; FreeHire covers multiple markets but its strongest filtering is currently technical roles.
 
+## Folder + tracker: a portable application workspace
+
+JobsFlow uses two layers: **folders hold materials and evidence; CSV or Google
+Sheets holds job metadata and status**. This keeps the application record portable
+and prevents important files from getting lost in a spreadsheet or chat thread.
+
+```text
+JobSearch_2026/
+├── 00_Profile/                    # CV facts, intent and search configuration
+├── 01_Masters/                   # A–F direction masters and job packages
+│   └── <direction>/<tier>/<job-id_company>/
+│       ├── jd_full.md             # Full JD
+│       ├── company_research.md    # Company facts, business and sources
+│       ├── application_preflight.json
+│       ├── tailor_plan.md         # JD → candidate evidence map
+│       └── CV / Cover Letter / PDF
+├── 02_Tracker/                   # CSV tracker, JD cache and scan outputs
+└── 03_Applications/              # Optional final-application archive
+```
+
+| Content | Folder workspace | CSV / Google Sheets |
+|---|:---:|:---:|
+| JD, company research and evidence map | ✓ | — |
+| CV, cover letter and PDF | ✓ | — |
+| Match score, priority and application status | — | ✓ |
+| Material versions and change history | ✓ | Link only, if useful |
+
+Each job ID connects the tracker row to its material package. You can back up the
+whole private workspace, review why a decision was made, and use local CSV without
+Google Sheets; Sheets is an optional tracker sync, not a CV or cover-letter store.
+
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
 
 ## Privacy, safety and public release
