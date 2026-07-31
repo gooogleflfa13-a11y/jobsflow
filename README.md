@@ -6,6 +6,8 @@
 
 # JobsFlow（求职全流程）
 
+[中文](README.md) · [English](README_EN.md)
+
 ### 找得准 · 写得像 · 投得稳
 
 把岗位检索、公司研究、JD 分析、定制简历、Cover Letter 和投递确认连成一条线。

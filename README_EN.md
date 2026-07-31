@@ -1,5 +1,7 @@
 # JobsFlow
 
+[中文](README.md) · [English](README_EN.md)
+
 ## Find the right roles. Write like the role. Apply with confidence.
 
 JobsFlow connects job search, company research, JD analysis, tailored CVs,
