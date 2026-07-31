@@ -1,6 +1,31 @@
 # JobsFlow
 
-JobsFlow is a local-first job-search workflow: configure from an existing CV, scan scoped portals, rank jobs in two passes, track them, and create a company/JD-aware application package only when you select a role.
+## Find the right roles. Write like the role. Apply with confidence.
+
+JobsFlow connects job search, company research, JD analysis, tailored CVs,
+cover letters, and application review in one local-first workflow. It is not
+just an AI resume writer: it helps you decide what to apply for, why you fit,
+and how to tailor the application without giving up final control.
+
+- **Fewer wasted applications:** two-pass scoring filters before deep JD work.
+- **More relevant materials:** company context and JD priorities drive the CV and cover letter.
+- **Reliable with smaller models:** deterministic preflight, evidence mapping, and quality gates prevent silent skips.
+- **Always user-approved:** JobsFlow never auto-submits an application.
+
+```text
+CV + intent → setup → search → quick score → JD deep read
+           → company research → tailored CV/cover letter → your approval
+```
+
+### Why JobsFlow?
+
+| Generic AI job tool | JobsFlow |
+|---|---|
+| Generates as soon as it sees a JD | Checks salary, language, work authorization, qualifications and attachments first |
+| Rewrites keywords only | Researches the company, business and role context |
+| Reuses one resume everywhere | Builds direction-specific bases, then tailors per JD |
+| Silently skips what a weaker model missed | Enforces schemas, gates, source checks and coverage checks |
+| Uses a fixed industry template | Generates industry-aware directions from your CV and intent |
 
 ## Quick start
 
@@ -42,15 +67,27 @@ A deterministic preflight extracts salary, availability, work authorization, lan
 
 DOCX masters remain the source. LibreOffice runs headlessly, both CV and cover letter are one page, and unchanged documents reuse a content-hash PDF cache.
 
+Example: for a JD asking for experience developing, implementing and monitoring an
+operational program, JobsFlow separates process design, execution and monitoring;
+it prioritizes matching evidence and asks about gaps instead of inventing metrics.
+
 ## Sources and privacy
 
 Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automation is a last fallback after structured APIs and cache.
+
+| Source | Search | Deep JD | Materials note |
+|---|:---:|:---:|---|
+| LinkedIn | ✓ | ✓ | Deep JD is preferred and cached for reuse |
+| JobsDB | ✓ | Partial | Paste the full JD when preparing materials |
+| CTgoodjobs | ✓ | Partial | Paste the full JD when preparing materials |
+| FreeHire | ✓ | — | Additional job source |
+| Google Sheets | — | — | Optional tracker sync; local CSV remains available |
 
 The default workflow is local-first. Data leaves the machine only when you explicitly enable Google Sheets, an external LLM, or a portal request. Review each service’s terms and privacy policy. JobsFlow never auto-submits an application.
 
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
 
-## Public release and product/personal isolation
+## Privacy, safety and public release
 
 The public source is the product line. A user's résumé, queries, job descriptions,
 scores, and application tracker belong to the separate private `JobSearch_2026/`
@@ -74,3 +111,14 @@ pytest -q
 ```
 
 See [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md) for release hygiene and history handling.
+
+## FAQ
+
+**Can I use it outside legal or compliance?** Yes. Setup generates directions and
+tracker headers from your target industry; legal/compliance is not a default.
+
+**Does it work with lower-capability models?** Yes. Models improve research and
+wording, while deterministic checks enforce the important boundaries.
+
+**Does it upload my CV?** Not by default. Data leaves the machine only when you
+explicitly enable an external LLM, Google Sheets, or a portal request.
