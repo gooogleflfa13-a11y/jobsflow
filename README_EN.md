@@ -47,3 +47,28 @@ Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automat
 The default workflow is local-first. Data leaves the machine only when you explicitly enable Google Sheets, an external LLM, or a portal request. Review each service’s terms and privacy policy. JobsFlow never auto-submits an application.
 
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
+
+## Public release and product/personal isolation
+
+The public source is the product line. A user's résumé, queries, job descriptions,
+scores, and application tracker belong to the separate private `JobSearch_2026/`
+workspace and are ignored by default. `/setup` generates industry-aware directions,
+tracker headers, scoring weights, and material priorities from that user's intent;
+legal/compliance is not a built-in default.
+
+Deterministic preflight, schema validation, scoring gates, source checks, evidence
+mapping, coverage checks, and PDF checks remain in force even with a lower-capability
+model. A stronger model improves research and wording, but cannot bypass the safety
+boundaries or invent facts.
+
+Before publishing a reviewed snapshot, run:
+
+```bash
+python3 setup.py --doctor-json
+python3 tools/security_guards.py
+python3 tools/public_release_check.py --source
+python3 tools/public_release_check.py --history
+pytest -q
+```
+
+See [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md) for release hygiene and history handling.
