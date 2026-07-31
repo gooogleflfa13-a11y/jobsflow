@@ -5,13 +5,13 @@ JobSearch_2026 materials pipeline CLI.
 Honest scope:
   - Scan two-pass (fresh_24h) is SEPARATE; this module never auto-runs on /scan.
   - Deep full JD is reliable mainly for LinkedIn; CT/JobsDB need paste (`jd set`).
-  - tailor reorders from fact-checked A–F base; does NOT re-fact-check;
-    plan is emphasis (skills/bullets order), not freestyle invent.
+  - tailor reorders an independently fact-checked A–F evidence set; it does NOT
+    reopen the source or invent claims; the plan is emphasis (skills/bullets order).
 
 Stages:
   A) Read CV / masters → A–F bases with FACT-CHECK
   B) See full JD (URL normalize + LinkedIn deep + paste)
-  C) Tailor from passed base toward JD (no re-fact-check)
+  C) Tailor from passed independent evidence set toward JD (no freestyle claims)
 
 Usage examples:
   python3 -m tools.job_materials base sync
@@ -362,7 +362,7 @@ def cmd_tailor(args: argparse.Namespace) -> int:
     print(f"Wrote {package / 'tailor_plan.md'}")
     print(f"Wrote {package / 'tailor_plan.json'}")
     print(
-        "Tailor = emphasis reorder from fact-checked base (no re-fact-check; no freestyle invent)."
+        "Tailor = emphasis reorder from independently fact-checked evidence (no source reopen; no freestyle invent)."
     )
     print("Next: apply summary/bullets into CV/CL DOCX per 二级手册, then PDF export.")
     _print_pdf_next_steps(package)
@@ -505,7 +505,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
 
     # Always produce plan for agent visibility; quality reflected in exit code
     args.allow_shallow_jd = True
-    print("== tailor (emphasis from A–F base; no re-fact-check) ==")
+    print("== tailor (emphasis from independently fact-checked A–F evidence) ==")
     title, company = _parse_title_company(package)
     lane = (args.lane or "").upper()
     if not lane:
@@ -584,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
             "JobSearch_2026 materials (on-demand only). "
             "Separate from scan two-pass. "
             "JD body: LinkedIn CLI + Playwright browser (JobsDB/CT); paste fallback. "
-            "tailor = emphasis from fact-checked A–F base (no re-fact-check)."
+            "tailor = emphasis from independently fact-checked A–F evidence (no source reopen)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -668,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "tailor",
-        help="Reorder emphasis from fact-checked A–F base toward JD (no re-fact-check)",
+        help="Reorder emphasis from independently fact-checked A–F evidence toward JD (no freestyle claims)",
     )
     p.add_argument("--package", required=True)
     p.add_argument("--lane", default="", help="A-F (auto if empty)")

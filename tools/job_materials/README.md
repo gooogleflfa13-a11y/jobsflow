@@ -6,12 +6,17 @@ never create application materials.
 ## Quality boundary
 
 - A–F base résumés represent the six role directions created during setup.
-- Each base must pass fact-check before it can support tailoring.
+- Each base must pass fact-check against the independent `00_Profile/fact_evidence.json`
+  and current facts baseline before it can support tailoring; generated masters and
+  archived documents cannot prove their own claims.
 - High-quality tailoring requires the full JD. If cache, structured retrieval and
   bounded browser fallback remain shallow, use `jd set` to paste the text.
 - Tailoring may select, reorder and conservatively rephrase verified evidence. It
   may not invent responsibilities, metrics, qualifications, company facts or
   candidate motivation.
+- Tailoring does not reopen the fact source or create new claims: it consumes the
+  immutable, passed evidence nodes and writes their IDs into the CV/Cover Letter/
+  application-email contract.
 - Output is written into a job package; master DOCX files are never overwritten.
 
 ## Typical flow

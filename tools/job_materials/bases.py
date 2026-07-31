@@ -3,8 +3,8 @@ A–F role-type bases for JobSearch_2026.
 
 PREMISE:
 - Different lanes (A–F) MUST have different emphasis (already true in 01_Masters).
-- Fact-check against 00_Profile + master text is REQUIRED before trusting a base for tailor.
-- Per-JD tailor does NOT re-run full fact audit.
+- Fact-check against the independent 00_Profile fact evidence store is REQUIRED before trusting a base for tailor.
+- Generated masters are never accepted as evidence; per-JD tailor may reorder only a passed evidence set and does NOT invent facts.
 """
 
 from __future__ import annotations

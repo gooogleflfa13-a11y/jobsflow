@@ -1,4 +1,4 @@
-"""Load fact evidence from 00_Profile + lane masters for fact-check."""
+"""Load independent 00_Profile evidence for drafting and base fact-checking."""
 
 from __future__ import annotations
 
