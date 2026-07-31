@@ -96,12 +96,15 @@ python3 -m tools.job_materials pipeline --job-id C0-005 --lane C
 - 先检查 `quality_gate.ready_for_drafting`；false 时按 `blockers` 补齐输入
 - 非旗舰模型必须严格按 `low_model_contract.required_order` 执行
 - `evidence_map` 已把每个 JD 能力主题映射到候选人证据，不得自行换成无证据经历
+- `llmo.jd_anchors` 是更细的执行契约：Tier 1/2 要求必须按 `status` 处理；`uncovered` / `prohibited_to_claim` 不得写入外发材料
+- 每条事实以 `evidence_id` 回溯；CV、Cover Letter 和申请邮件复用 `llmo.cross_material` 的同一证据 ID 与数字
 
 - 优先展示 `jd_focus`、`role_priorities` 对应的证据
 - JD 要求流程创建、实施、监控时，优先已有的流程设计、检查点、治理、跨团队落地证据
 - JD 关注技术赋能时，可突出已有的 AI 接入流程、自动化或系统化工作，但不得夸大为不存在的产品或指标
 - 不同岗位必须依照 `differentiation_fingerprint` 和公司业务改变摘要、技能顺序及前置 bullet
 - 不得为了 STAR 格式补造情境、职责、数字或结果；没有量化证据就用准确的定性结果
+- 每条 bullet 尽量自包含；不要写“如上”“上述项目”或无主语的“协助”，并把最强的已映射证据放在摘要/相关经历段首
 
 ## 4. 定制 Cover Letter
 
@@ -114,6 +117,7 @@ Cover Letter 必须同时包含：
 避免泛泛的 “I admire your esteemed company”。如果公司调研不足，明确留空或先补查。
 
 非旗舰模型直接按 `cover_letter_blueprint.paragraphs` 的四个槽位写作：opening → company_interest → evidence → close。不得遗漏槽位，不得在槽位之外增加新事实。
+申请邮件使用 `application_email_blueprint`，只保留同一证据图中最强的 2–3 条事实；纯文本、无内部评分或事实库备注。
 
 ## 5. 输出与验证
 
@@ -122,5 +126,6 @@ Cover Letter 必须同时包含：
 - 两份 PDF 均为 1 页；只在内容定稿后转换一次
 - `docx_to_pdf.py` 会复用内容哈希相同的 PDF；仅在确需重建时使用 `--force`
 - 逐项检查公司事实来源、JD 覆盖、事实一致性、PDF 页数和文字层
+- 如已获得 PDF 的纯文本抽取，可运行 `python3 -m tools.job_materials llmo audit --file extracted.txt --kind cv`；输出是内部解析 QA 指标，不是 ATS 分数
 
 最终向用户报告：材料包路径、JD 来源、公司研究来源、两份材料的差异化重点、未核实项、PDF/缓存状态。

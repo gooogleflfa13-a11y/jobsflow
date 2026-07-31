@@ -19,4 +19,7 @@ company brief. Public files contain no filled candidate story.
 - Use DOCX → LibreOffice headless, not a separate LaTeX workflow.
 - Validate the PDF text layer and filename before `/apply`.
 
-See `cover_letter_blueprint` and `low_model_contract` in `tailor_plan.json`.
+See `cover_letter_blueprint`, `application_email_blueprint`, `llmo.cross_material`
+and `low_model_contract` in `tailor_plan.json`. Reuse the referenced evidence IDs
+and numeric facts across every material view; an uncovered requirement is a gap,
+not an invitation to invent a claim.

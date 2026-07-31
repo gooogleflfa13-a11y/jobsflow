@@ -94,6 +94,13 @@ python3 -m tools.job_materials pipeline --package "..." --lane A
   source URLs and distinguish sourced facts from inference.
 - Build a JD requirement map and connect every customized claim to verified résumé
   evidence. Unrelated evidence does not count.
+- Emit stable evidence IDs, requirement coverage states (`covered`, `partial`,
+  `uncovered`, `prohibited_to_claim`) and one cross-material contract for CV,
+  cover letter and application email. The same evidence ID and numeric fact must
+  retain the same meaning in every material view.
+- Optimize evidence density and reading order (summary/role-leading evidence)
+  without keyword stuffing. LLMO is parseability and evidence alignment, not
+  model-memory writing or an ATS score guarantee.
 - Tailoring may reorder, select and conservatively rephrase evidence; it may not
   invent duties, outcomes, tools, qualifications or motivation.
 - The cover letter should express specific, evidence-based interest in the company
@@ -110,6 +117,7 @@ Before ending a relevant task, confirm:
 - configured search buckets are present and the tracked template remains neutral;
 - scan and material generation stayed decoupled;
 - company/JD claims have evidence or are explicitly unresolved;
+- active material selectors exclude `_archive`/`archive`/`archives` versions;
 - PDFs meet the one-page and rendering checks;
 - public release checks and tests pass.
 

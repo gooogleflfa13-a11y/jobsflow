@@ -73,6 +73,21 @@ Example: for a JD asking for experience developing, implementing and monitoring 
 operational program, JobsFlow separates process design, execution and monitoring;
 it prioritizes matching evidence and asks about gaps instead of inventing metrics.
 
+### LLMO: make real evidence easier to read correctly
+
+JobsFlow treats LLMO as an auditable material contract—not writing a candidate into
+model memory and not an ATS-score promise:
+
+- every fact-checked experience gets a stable `evidence_id`, allowed wording and forbidden inferences;
+- JD anchors are tiered and labelled `covered`, `partial`, `uncovered` or `prohibited_to_claim`;
+- the CV, cover letter and application email share one evidence graph and the same numeric facts;
+- parseability is protected with selectable single-column text, standard sections and contact details outside images/text boxes/headers/footers;
+- QA metrics are internal engineering indicators, never an official ATS score or hiring prediction.
+
+This gives models with different capability levels an executable boundary: the model
+reorders and rephrases mapped evidence instead of having to infer the whole JD or
+fill unsupported gaps.
+
 ## Sources and privacy
 
 Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automation is a last fallback after structured APIs and cache.

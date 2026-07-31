@@ -15,7 +15,12 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
-from tools.job_materials.evidence import lane_seed_bullets, load_evidence_blob, tokens
+from tools.job_materials.evidence import (
+    lane_seed_bullets,
+    load_fact_evidence,
+    load_fact_records,
+    tokens,
+)
 from tools.job_materials.paths import LANES, bases_runtime_dir, load_lanes, masters_dir
 
 
@@ -63,7 +68,7 @@ def sync_base_from_masters(root: Path, lane: str) -> dict[str, Any]:
     chosen = (top + rest)[:10] or ranked[:6]
 
     # skills-ish tokens from emphasis that appear in evidence
-    blob = load_evidence_blob(root, lane=lane).lower()
+    blob = load_fact_evidence(root).lower()
     skills = []
     for e in emp:
         if e in blob or any(e in b.lower() for b in chosen):
@@ -111,11 +116,40 @@ def load_base(root: Path, lane: str) -> dict[str, Any] | None:
 
 
 def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
-    """Ground each base bullet in evidence blob (00_Profile + lane masters)."""
+    """Ground each base claim in independent evidence nodes.
+
+    The old implementation searched a blob that included generated masters.
+    That made a claim capable of validating itself.  This implementation
+    requires ``00_Profile/fact_evidence.json`` and matches each claim against
+    its independent records; generated masters are never used as evidence.
+    """
     lane = str(base.get("base_id") or "")
-    blob = load_evidence_blob(root, lane=lane).lower()
+    records = load_fact_records(root)
     claims = []
     failed = 0
+
+    if not records:
+        base = dict(base)
+        base["factcheck"] = {
+            "status": "failed",
+            "failed_count": 1,
+            "claims": [],
+            "checked_at": hkt_now(),
+            "notes": [
+                "Independent fact_evidence.json is missing or invalid; fail closed.",
+                "Generated masters are not accepted as fact evidence.",
+            ],
+        }
+        return base
+
+    def metric_tokens(text: str) -> set[str]:
+        return {
+            m.lower().replace(" ", "")
+            for m in re.findall(
+                r"(?:rmb\s*\d+(?:\.\d+)?\s*(?:million|m)?|\d+(?:\.\d+)?\s*%|\d+\+)",
+                text.lower(),
+            )
+        }
 
     def check(kind: str, text: str) -> dict[str, Any]:
         nonlocal failed
@@ -127,9 +161,36 @@ def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
         if not toks:
             failed += 1
             return {"kind": kind, "text": text, "supported": False, "hit_ratio": 0.0}
-        hits = [t for t in toks if t in blob]
+        claim_metrics = metric_tokens(text)
+        record_infos = []
+        for record in records:
+            record_text = " ".join(
+                [
+                    str(record.get("claim") or ""),
+                    " ".join(str(x) for x in record.get("allowed_phrasing") or []),
+                    " ".join(str(x) for x in record.get("contexts") or []),
+                ]
+            )
+            record_tokens = tokens(record_text)
+            hits = [t for t in toks if t in record_tokens]
+            ratio = len(hits) / max(1, len(toks))
+            record_metrics = metric_tokens(record_text)
+            record_infos.append((record, record_tokens, record_metrics, hits, ratio))
+        union_tokens = set().union(*(item[1] for item in record_infos))
+        union_metrics = set().union(*(item[2] for item in record_infos))
+        hits = [t for t in toks if t in union_tokens]
         ratio = len(hits) / max(1, len(toks))
-        supported = ratio >= 0.30 or len(hits) >= 3
+        metrics_supported = claim_metrics.issubset(union_metrics)
+        hit_count = len(hits)
+        evidence_ids = [
+            item[0].get("evidence_id")
+            for item in sorted(record_infos, key=lambda item: item[4], reverse=True)
+            if item[3]
+        ][:4]
+        # A concise Core line may combine two independently supported facts;
+        # use a moderate lexical threshold while still requiring every metric
+        # to appear in the matched evidence node.
+        supported = bool(metrics_supported and (ratio >= 0.30 or hit_count >= 3))
         if not supported:
             failed += 1
         return {
@@ -138,6 +199,8 @@ def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
             "supported": supported,
             "hit_ratio": round(ratio, 2),
             "hits": hits[:8],
+            "evidence_ids": evidence_ids,
+            "metric_tokens": sorted(claim_metrics),
         }
 
     for b in base.get("bullets") or []:
@@ -156,7 +219,8 @@ def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
         "checked_at": hkt_now(),
         "notes": [
             "Fact-check is REQUIRED for role-type bases (A–F).",
-            "Per-JD tailor must use a passed base and must NOT re-audit all facts.",
+            "Claims were matched to independent fact_evidence.json records; generated masters were excluded.",
+            "Per-JD tailor must use a passed base and must NOT silently invent or alter facts.",
         ],
     }
     return base

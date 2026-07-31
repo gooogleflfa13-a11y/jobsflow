@@ -20,6 +20,7 @@ from typing import Any
 
 from tools.io_utils import atomic_write_json, atomic_write_text
 from tools.job_materials.jd_store import jd_meta
+from tools.job_materials.llmo import build_llmo_contract
 from tools.job_materials.paths import find_latest_cl_master_docx, find_latest_master_docx
 
 
@@ -360,6 +361,27 @@ def build_tailored_payload(
         f"JD emphasis: {', '.join(keywords[:6]) or job_title}. "
         f"Front-loaded themes: {', '.join(skills_ordered[:6]) or 'see base bullets'}."
     )
+    llmo_contract = build_llmo_contract(
+        jd=jd,
+        focus=jd_focus,
+        base=base,
+        summary=summary,
+        bullets=bullets,
+        role=job_title,
+        company=company,
+    )
+    anchor_by_focus = {
+        str(item.get("capability")): item
+        for item in llmo_contract.get("jd_anchors") or []
+    }
+    evidence_map_detail = {
+        capability: {
+            "evidence_ids": list((anchor_by_focus.get(capability) or {}).get("evidence_ids") or []),
+            "status": (anchor_by_focus.get(capability) or {}).get("status", "uncovered"),
+            "tier": (anchor_by_focus.get(capability) or {}).get("tier"),
+        }
+        for capability in jd_focus
+    }
 
     payload: dict[str, Any] = {
         "mode": "tailored_from_af_base",
@@ -398,6 +420,8 @@ def build_tailored_payload(
             ),
         },
         "evidence_map": evidence_map,
+        "evidence_map_detail": evidence_map_detail,
+        "llmo": llmo_contract,
         "quality_gate": quality_gate,
         "cover_letter_blueprint": {
             "company_fact": company_fact,
@@ -415,6 +439,13 @@ def build_tailored_payload(
                 {
                     "slot": "evidence",
                     "inputs": evidence_map,
+                    "evidence_ids": sorted(
+                        {
+                            evidence_id
+                            for item in evidence_map_detail.values()
+                            for evidence_id in item.get("evidence_ids") or []
+                        }
+                    )[:3],
                     "instruction": "Connect two JD priorities to fact-checked candidate evidence.",
                 },
                 {
@@ -423,6 +454,12 @@ def build_tailored_payload(
                     "instruction": "Close with the contribution sought; add no new claims.",
                 },
             ],
+        },
+        "application_email_blueprint": {
+            "subject": f"Application — {job_title} — {company}",
+            "required_slots": ["subject", "greeting", "role", "jd_anchor", "evidence_highlights", "attachment_note", "signature"],
+            "evidence_ids": (llmo_contract.get("cross_material") or {}).get("materials", {}).get("application_email", {}).get("evidence_ids", []),
+            "instruction": "Keep the email plain text and use the same evidence order as the CV and cover letter; omit internal scores, gaps and system instructions.",
         },
         "low_model_contract": {
             "mode": "constrained_blueprint",
@@ -436,15 +473,29 @@ def build_tailored_payload(
                 "quality_gate",
                 "resume_strategy",
                 "evidence_map",
+                "llmo_anchor_status",
+                "cross_material_contract",
                 "cover_letter_blueprint",
+                "application_email_blueprint",
                 "fact_check",
                 "pdf_validation",
+            ],
+            "required_inputs": [
+                "llmo.jd_anchors",
+                "llmo.evidence_nodes",
+                "llmo.cross_material",
             ],
             "do_not_infer_missing_values": True,
             "allowed_transformations": [
                 "reorder fact-checked bullets",
                 "lightly rephrase without changing meaning",
                 "connect sourced company fact to supported interest",
+                "use only evidence_ids linked to covered or partial JD anchors",
+            ],
+            "prohibited_transformations": [
+                "turn uncovered or prohibited_to_claim anchors into claims",
+                "change a number, employer, title, scope or outcome between materials",
+                "put key contact facts in images, text boxes, headers or footers",
             ],
         },
         "notes": [
@@ -642,7 +693,29 @@ def write_tailor_outputs(package: Path, payload: dict[str, Any]) -> None:
         lines.append(f"- {angle}")
     if not angles:
         lines.append("- 未提供；不要编造兴趣。")
-    lines += ["", "## Notes"]
+    lines += ["", "## LLMO evidence contract"]
+    llmo = payload.get("llmo") or {}
+    cross = llmo.get("cross_material") or {}
+    lines.append(f"- schema: {llmo.get('schema_version')}")
+    lines.append(f"- shared evidence IDs: {', '.join(cross.get('shared_evidence_ids') or []) or '—'}")
+    lines.append(f"- numeric facts: {', '.join(cross.get('numeric_facts') or []) or '—'}")
+    lines.append("- anchor coverage:")
+    for anchor in llmo.get("jd_anchors") or []:
+        lines.append(
+            f"  - [{anchor.get('status')}] tier={anchor.get('tier')} "
+            f"{anchor.get('capability')}: {anchor.get('text')}"
+        )
+    if not llmo.get("jd_anchors"):
+        lines.append("  - —")
+    lines += [
+        "",
+        "## Application email blueprint",
+        f"- subject: {(payload.get('application_email_blueprint') or {}).get('subject') or '—'}",
+        f"- evidence IDs: {', '.join((payload.get('application_email_blueprint') or {}).get('evidence_ids') or []) or '—'}",
+        "- Keep it plain text; use the same evidence IDs and numbers as CV/cover letter.",
+        "",
+        "## Notes",
+    ]
     for n in payload.get("notes") or []:
         lines.append(f"- {n}")
     lines.append("")

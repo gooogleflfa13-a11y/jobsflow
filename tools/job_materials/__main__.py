@@ -61,6 +61,7 @@ from tools.job_materials.jd_store import (  # noqa: E402
     read_jd,
     write_jd,
 )
+from tools.job_materials.llmo import audit_plain_text  # noqa: E402
 from tools.job_materials.paths import LANES, jobsearch_root  # noqa: E402
 from tools.job_materials.packages import resolve_package  # noqa: E402
 from tools.job_materials.tailor import (  # noqa: E402
@@ -466,6 +467,21 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llmo(args: argparse.Namespace) -> int:
+    """Audit extracted material text without pretending to calculate an ATS score."""
+    if args.action != "audit":
+        return 0
+    try:
+        text = Path(args.file).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"cannot read material text: {exc}", file=sys.stderr)
+        return 2
+    contacts = [item.strip() for item in (args.contact or []) if item.strip()]
+    result = audit_plain_text(text, kind=args.kind, expected_contact_tokens=contacts)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if not result.get("human_review_required") else 4
+
+
 def cmd_pipeline(args: argparse.Namespace) -> int:
     """
     Package step: enrich → tailor → materials_status + master ref.
@@ -589,6 +605,17 @@ def main(argv: list[str] | None = None) -> int:
     pr_parse.set_defaults(func=cmd_resume)
     pr_show = pr_sub.add_parser("show", help="Show parsed resume meta + preview")
     pr_show.set_defaults(func=cmd_resume)
+
+    p = sub.add_parser(
+        "llmo",
+        help="Audit extracted CV/cover-letter text using the deterministic LLMO contract",
+    )
+    p_sub = p.add_subparsers(dest="action", required=True)
+    p_audit = p_sub.add_parser("audit", help="Audit plain text extracted from a material")
+    p_audit.add_argument("--file", required=True, help="UTF-8 plain-text extraction")
+    p_audit.add_argument("--kind", choices=["cv", "cover_letter", "application_email"], default="cv")
+    p_audit.add_argument("--contact", action="append", default=[], help="Expected contact token; repeatable")
+    p_audit.set_defaults(func=cmd_llmo)
 
     p = sub.add_parser("base", help="A–F bases sync/factcheck (required before trustworthy tailor)")
     p.add_argument("action", choices=["list", "sync", "factcheck", "show"])

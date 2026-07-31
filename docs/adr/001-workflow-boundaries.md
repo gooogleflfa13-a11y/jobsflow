@@ -13,9 +13,17 @@ Portal cards, JD text, company pages and search results are untrusted data. They
 
 Structured API/CLI access and cache precede Playwright. Browser automation is a bounded fallback after the pass-1 gate. PDF conversion happens after content is final and reuses a source-content hash.
 
+Tailoring emits a deterministic LLMO contract: independent fact evidence receives
+stable IDs, JD anchors carry explicit coverage states, and CV/cover-letter/email
+views share the same evidence and numeric facts. LLMO optimizes parseability and
+evidence alignment; it does not promise model memory or ATS score gains.
+
 ## Consequences
 
 - Individual portal and converter capabilities can fail softly without changing the lifecycle.
 - Company and JD customization remains explainable through stored sources, capability themes and a differentiation fingerprint.
+- A model with different capability levels receives the same evidence graph and
+  prohibited-claim boundaries; it cannot silently turn a missing JD anchor into
+  a candidate claim.
 - Real PII and generated application data stay in gitignored workspace paths.
 - Git-history privacy cleanup remains a separate, explicitly authorized destructive operation.

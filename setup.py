@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import json
 import os
@@ -877,6 +878,46 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
     resume_runtime.mkdir(parents=True, exist_ok=True)
     (resume_runtime / "resume.txt").write_text(
         str(resume_text or "").strip() + "\n", encoding="utf-8"
+    )
+    # Build a private structured fact index from the user-provided résumé. It
+    # is a source boundary for fact-checking, not a public product preset.
+    records = []
+    seen_claims = set()
+    for line in re.split(r"\n\s*\n|\n", str(resume_text or "")):
+        claim = re.sub(r"^\s*[-*•]\s*", "", line).strip()
+        claim = re.sub(r"\s+", " ", claim)
+        if len(claim) < 40 or claim.casefold() in seen_claims:
+            continue
+        seen_claims.add(claim.casefold())
+        digest = hashlib.sha256(claim.casefold().encode("utf-8")).hexdigest()[:10].upper()
+        records.append(
+            {
+                "evidence_id": f"EVID-{digest}",
+                "claim": claim,
+                "entities": [],
+                "metrics": re.findall(r"\d+(?:[.,]\d+)*\+?%?", claim),
+                "contexts": [],
+                "allowed_phrasing": [claim],
+                "forbidden_inference": [
+                    "Do not infer duties, tools, scope, seniority, clients or outcomes not stated in the imported résumé."
+                ],
+                "source_refs": ["00_Profile/resume_runtime/resume.txt"],
+                "status": "user_imported",
+            }
+        )
+    (profile_dir / "fact_evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": "user_imported_resume",
+                "records": records,
+                "policy": "Only records in this private file may ground generated material; users remain responsible for final accuracy.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     fallback = _setup_design_fallback(prof)
     request = build_setup_design_request(

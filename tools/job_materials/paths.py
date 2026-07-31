@@ -7,6 +7,16 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 JS = REPO / "JobSearch_2026"
+ARCHIVE_DIR_NAMES = {"_archive", "archive", "archives"}
+
+
+def is_archived_path(path: Path) -> bool:
+    """Return True when a path is inside an explicit archive directory.
+
+    Version governance is a product invariant: active selectors must not pick a
+    submitted/old document merely because it has the newest filesystem mtime.
+    """
+    return any(part.casefold() in ARCHIVE_DIR_NAMES for part in Path(path).parts)
 
 
 def jobsearch_root() -> Path:
@@ -113,14 +123,20 @@ def find_latest_master_docx(lane: str, root: Path | None = None) -> Path | None:
     candidates = [
         p
         for p in folder.glob("master_*_v*.docx")
-        if p.is_file() and not p.name.startswith("~$") and "cl_master" not in p.name
+        if p.is_file()
+        and not is_archived_path(p)
+        and not p.name.startswith("~$")
+        and "cl_master" not in p.name
     ]
     if not candidates:
         # fallback: any master_*.docx that looks like a CV master
         candidates = [
             p
             for p in folder.glob("master_*.docx")
-            if p.is_file() and not p.name.startswith("~$") and "cl_master" not in p.name
+            if p.is_file()
+            and not is_archived_path(p)
+            and not p.name.startswith("~$")
+            and "cl_master" not in p.name
         ]
     if not candidates:
         return None
@@ -135,13 +151,13 @@ def find_latest_cl_master_docx(lane: str, root: Path | None = None) -> Path | No
     candidates = [
         p
         for p in folder.glob("cl_master_*_v*.docx")
-        if p.is_file() and not p.name.startswith("~$")
+        if p.is_file() and not is_archived_path(p) and not p.name.startswith("~$")
     ]
     if not candidates:
         candidates = [
             p
             for p in folder.glob("cl_master_*.docx")
-            if p.is_file() and not p.name.startswith("~$")
+            if p.is_file() and not is_archived_path(p) and not p.name.startswith("~$")
         ]
     if not candidates:
         return None

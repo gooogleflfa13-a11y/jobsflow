@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.io_utils import atomic_write_json, atomic_write_text
-from tools.job_materials.paths import load_lanes, masters_dir
+from tools.job_materials.paths import is_archived_path, load_lanes, masters_dir
 
 
 def _safe_component(value: str, *, fallback: str) -> str:
@@ -63,7 +63,11 @@ def _existing_package(root: Path, job_id: str) -> Path | None:
     if not base.is_dir():
         return None
     matches = sorted(
-        (p for p in base.rglob(f"{job_id}_*") if p.is_dir()),
+        (
+            p
+            for p in base.rglob(f"{job_id}_*")
+            if p.is_dir() and not is_archived_path(p)
+        ),
         key=lambda p: str(p),
     )
     return matches[0].resolve() if matches else None

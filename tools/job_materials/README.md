@@ -76,7 +76,7 @@ python3 -m tools.job_materials company set \
 | `application_preflight.json` | Deterministic questions and profile checks |
 | `company_research_request.json` | Source-aware quick-research contract when needed |
 | `company_research.json` / `.md` | Verified company context and sources |
-| `tailor_plan.json` / `.md` | JD focus, evidence map, CV strategy and four-slot cover-letter blueprint |
+| `tailor_plan.json` / `.md` | JD focus, evidence map, LLMO evidence graph, cross-material contract, CV strategy, cover-letter and application-email blueprints |
 | `materials_status.md` | Quality blockers and next action |
 | `base_master_ref.txt` | Reference to the fact-checked A–F master |
 | `jd_full.md` | Full JD and provenance |
@@ -84,6 +84,33 @@ python3 -m tools.job_materials company set \
 `tailor_plan.json.low_model_contract` defines the required execution order so a
 less capable model cannot skip preflight, company research, evidence mapping,
 fact checking or PDF validation.
+
+## LLMO contract (evidence alignment, not model-memory claims)
+
+Every tailor plan also contains `llmo`:
+
+- `evidence_nodes` gives each fact-checked base claim a stable `evidence_id`,
+  allowed wording, metrics and forbidden inferences;
+- `jd_anchors` classifies requirements as Tier 1/2 and reports
+  `covered`, `partial`, `uncovered` or `prohibited_to_claim` instead of treating
+  keyword presence as proof;
+- `cross_material` shares the same evidence IDs and numeric facts across CV,
+  cover letter and application email, so a changed fact has an explicit impact
+  set;
+- `parseability_contract` keeps key information in selectable, single-column
+  text and treats QA metrics as internal engineering indicators, never ATS
+  score promises.
+
+The optional text audit is deterministic and model-independent:
+
+```bash
+python3 -m tools.job_materials llmo audit \
+  --file extracted_cv.txt --kind cv --contact user@example.com
+```
+
+Archive directories named `_archive`, `archive` or `archives` are excluded from
+active master/package selection. Keep old submitted versions there so the
+current material cannot be selected by filesystem timestamp alone.
 
 The pipeline exits non-zero while the quality gate is blocked (for example when
 company sources or candidate evidence are missing). It still writes the request
