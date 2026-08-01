@@ -92,6 +92,21 @@ def test_explicit_setup_constraints_reach_scoring_profile():
     assert "薪资" in neutral.reason
 
 
+def test_semantic_profile_calibration_is_explicit_and_private_configurable():
+    assert setup.normalize_semantic_profile_level("低") == "low"
+    assert setup.normalize_semantic_profile_level("high") == "high"
+    assert setup.normalize_semantic_profile_level("unrecognized") == "medium"
+
+    prof = setup.classify_profession("operations analyst", "")
+    prof["semantic_profile"] = setup.semantic_profile_for_level("low")
+    queries = setup.build_queries_config(profession=prof, location="Hong Kong")
+    semantic = queries["scoring_profile"]["semantic_profile"]
+
+    assert semantic["upper_bound_level"] == "low"
+    assert semantic["upper_only_score_cap"] < semantic["transfer_score_cap"]
+    assert semantic["forbid_invented_experience"] is True
+
+
 def test_unknown_industry_fallback_uses_role_directions_not_seniority():
     prof = setup.classify_profession("clinical research coordinator", "")
 

@@ -160,8 +160,9 @@ def _baseline_max_from_gsheet(sheet_id: str, cred_path: Path) -> dict[str, int]:
     ids: list[str] = []
     for ws in sh.worksheets():
         title = ws.title or ""
-        if title.startswith("fresh_"):
-            continue
+        # Include ALL worksheets (main tracker tabs AND fresh_24h tabs) so that
+        # job IDs already assigned in any fresh tab are never re-used. Skipping
+        # fresh_* here caused duplicate IDs (e.g. F1-013 in both 07-31 and 08-01).
         try:
             col = ws.col_values(1)
             ids.extend(col[1:])
@@ -229,6 +230,7 @@ def score_new_hits(
             salary=h.get("salary") or "",
             track_hint=h.get("track_hint") or "F",
             soft_flags=h.get("soft_flags") or "",
+            repo=repo or REPO,
         )
         if sc.score < min_score:
             dropped.append(

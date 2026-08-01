@@ -61,6 +61,65 @@ PERSONAL_QUERY_BUCKETS = [
     "exploration_roles",
 ]
 
+# The semantic matcher may reason about transferable capability, but the user
+# decides how far the private profile may extend beyond directly evidenced
+# experience.  These are product-level policies, not an industry preset.
+SEMANTIC_PROFILE_LEVELS: dict[str, dict[str, Any]] = {
+    "low": {
+        "label": "低（保守）",
+        "transfer_scope": "仅直接事实或非常接近的可迁移能力",
+        "transfer_score_cap": 4.0,
+        "upper_only_score_cap": 3.5,
+    },
+    "medium": {
+        "label": "中（平衡）",
+        "transfer_scope": "允许相邻职责和明确可迁移能力，但不等同于已有实操经历",
+        "transfer_score_cap": 4.5,
+        "upper_only_score_cap": 4.0,
+    },
+    "high": {
+        "label": "高（扩展）",
+        "transfer_scope": "允许较宽的能力迁移和潜在适配判断，但仍禁止虚构经历",
+        "transfer_score_cap": 5.0,
+        "upper_only_score_cap": 4.5,
+    },
+}
+
+
+def normalize_semantic_profile_level(value: str | None) -> str:
+    """Normalize user-facing calibration choices to low/medium/high."""
+    raw = str(value or "").strip().casefold()
+    aliases = {
+        "1": "low",
+        "低": "low",
+        "保守": "low",
+        "谨慎": "low",
+        "conservative": "low",
+        "low": "low",
+        "2": "medium",
+        "中": "medium",
+        "平衡": "medium",
+        "适中": "medium",
+        "medium": "medium",
+        "3": "high",
+        "高": "high",
+        "扩展": "high",
+        "开放": "high",
+        "high": "high",
+    }
+    return aliases.get(raw, "medium")
+
+
+def semantic_profile_for_level(value: str | None) -> dict[str, Any]:
+    level = normalize_semantic_profile_level(value)
+    return {
+        "schema_version": 1,
+        "upper_bound_level": level,
+        **SEMANTIC_PROFILE_LEVELS[level],
+        "direct_facts_score_cap": 5.0,
+        "forbid_invented_experience": True,
+    }
+
 INITIAL_TRACKER_HEADERS = [
     "岗位编号", "本轮新增", "层级", "批次", "入表时间", "匹配分", "职位",
     "公司", "赛道", "来源", "地点", "薪资", "链接", "简述", "语言要求",
@@ -327,6 +386,24 @@ def ask_tracking() -> dict[str, Any]:
     if choice == "1":
         return {"method": "google_sheets"}
     return {"method": "local_csv"}
+
+
+def ask_semantic_profile_level() -> str:
+    """Ask how broad semantic capability transfer may be during matching."""
+    print("\n── Step 5: Resume-match calibration ──\n")
+    print("  低 / low    保守：主要接受直接事实和非常接近的能力迁移")
+    print("  中 / medium 平衡：接受相邻职责，但不把潜力当作已有经历")
+    print("  高 / high   扩展：允许较宽的能力迁移，仍禁止虚构经历")
+    choice = ask("选择简历匹配画像上沿幅度（low/medium/high）", "medium")
+    level = normalize_semantic_profile_level(choice)
+    if str(choice or "").strip() and str(choice).strip().casefold() not in {
+        "1", "低", "保守", "谨慎", "conservative", "low",
+        "2", "中", "平衡", "适中", "medium",
+        "3", "高", "扩展", "开放", "high",
+    }:
+        warn("未识别该选项，使用 medium（平衡）")
+    print(f"  已选择：{SEMANTIC_PROFILE_LEVELS[level]['label']}")
+    return level
 
 
 # ── Resume ────────────────────────────────────────────────────────────
@@ -724,6 +801,10 @@ def build_queries_config(
             "max_relevant_years": profession.get("max_relevant_years"),
             "schedule_risk_keywords": list(profession.get("schedule_risk_keywords") or []),
             "qualification_keywords": list(profession.get("qualification_keywords") or []),
+            "semantic_profile": dict(
+                profession.get("semantic_profile")
+                or semantic_profile_for_level("medium")
+            ),
             "neutral_scores": dict(
                 profession.get("neutral_scores")
                 or {"eligibility": 3.5, "work": 3.5, "pay": 3.0}
@@ -832,7 +913,13 @@ def _apply_design_to_profession(
     return updated
 
 
-def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict) -> int:
+def generate_config(
+    resume_text: str,
+    intent: str,
+    tracking: dict,
+    prereqs: dict,
+    semantic_upper_level: str = "medium",
+) -> int:
     print("\n── Step 5: Generating config ──\n")
 
     name = extract_name(resume_text) or ask("Your name", "Your Name")
@@ -842,6 +929,7 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
     languages = extract_languages(resume_text)
 
     prof = classify_profession(intent, resume_text)
+    prof["semantic_profile"] = semantic_profile_for_level(semantic_upper_level)
     # Parse only explicit, machine-checkable constraints from the user's intent;
     # missing values stay unknown rather than being guessed from résumé history.
     intent_lower = str(intent or "").casefold()
@@ -927,6 +1015,7 @@ def generate_config(resume_text: str, intent: str, tracking: dict, prereqs: dict
         intent=intent,
         resume_keywords=prof["evidence_keywords"],
         fallback=fallback,
+        semantic_profile=prof["semantic_profile"],
     )
     request_path = profile_dir / "setup_design_request.json"
     request_path.write_text(
@@ -1190,7 +1279,14 @@ def main(argv: list[str] | None = None) -> int:
         folder = Path(ask("Resume folder path", str(Path.home() / "Documents"))).expanduser().resolve()
     resume_text = read_resume(folder)
     intent = ask("\nWhat jobs are you looking for?\n  (e.g. 'Junior paralegal in Hong Kong, PRC background')")
-    generate_config(resume_text, intent, tracking, prereqs)
+    semantic_upper_level = ask_semantic_profile_level()
+    generate_config(
+        resume_text,
+        intent,
+        tracking,
+        prereqs,
+        semantic_upper_level=semantic_upper_level,
+    )
 
     print(f"\n  Done! Config files generated.")
 

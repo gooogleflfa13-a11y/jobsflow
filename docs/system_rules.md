@@ -53,6 +53,12 @@ columns, exceed limits, invent candidate facts or write into tracked product
 configuration. Invalid output keeps the deterministic fallback. An existing
 tracker with data rows is never migrated implicitly.
 
+`/setup` also asks the user to calibrate semantic resume matching as low
+(conservative), medium (balanced) or high (broader). This setting is private and
+only changes how far `capability_upper` may support a JD comparison. It never
+turns potential into completed experience and never relaxes fact, qualification
+or forbidden-claim checks.
+
 ### Incremental intent changes
 
 After setup, intent changes use the two-phase `tools/update_intent.py` contract:
@@ -93,6 +99,9 @@ Their actual queries and relevance rules are candidate- and profession-specific.
   reinterpret portal success, counters or next actions.
 - Hard rejection and keyword relevance must come from the private configuration,
   not a built-in profession.
+- Deep-JD resume matching may create a pending agent task. A completed verdict
+  must declare a direct, transferable, upper-only or none basis; missing verdicts
+  fall back to the deterministic keyword score.
 
 ## 5. Materials
 

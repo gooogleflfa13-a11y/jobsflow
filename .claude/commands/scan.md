@@ -28,6 +28,18 @@
    - Top 5 按深评分数降序：编号 | 职位 | 公司 | 分数 | JD深度
    - 有无 portal 错误（CT cookie 过期等）
 
+5. 如果深评生成了语义简历匹配任务，读取并完成待处理任务：
+
+```bash
+python3 tools/fresh_24h/semantic_match_agent.py list
+python3 tools/fresh_24h/semantic_match_agent.py show <key>
+python3 tools/fresh_24h/semantic_match_agent.py complete <key> \
+  --score 4.0 --basis transferable --note "与事实基线相邻且可迁移"
+```
+
+完成后重新运行评分，才会把语义判断回填到 `resume` 维度。没有完成的任务不阻塞
+扫描，系统保留关键词评分作为明确兜底。
+
 4. 问用户：「要推到 Google Sheets 吗？」（如果用户之前说「只看不进表」则跳过）
 
 ## 注意

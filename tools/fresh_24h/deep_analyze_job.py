@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--title", default="", help="Override title if known")
     ap.add_argument("--company", default="", help="Override company if known")
     ap.add_argument("--location", default="Hong Kong")
-    ap.add_argument("--track-hint", default="B", help="A-F track hint for scorer")
+    ap.add_argument("--track-hint", default="B", help="A-G track hint for scorer")
     ap.add_argument("--salary", default="")
     ap.add_argument(
         "--out-dir",
@@ -83,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         salary=args.salary or "",
         track_hint=args.track_hint,
         soft_flags="",
+        jd_depth="deep" if res.ok else "teaser_fallback",
+        repo=repo,
     )
 
     jid = res.job_id or extract_linkedin_job_id(args.url_or_id) or "unknown"

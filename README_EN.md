@@ -37,6 +37,15 @@ chain, then places the strongest supported evidence where ATS and model readers
 can parse it early. The goal is to make real capability easier to understand—not
 to fabricate experience, manipulate ATS, or promise a fixed score increase.
 
+For deep-JD scoring, resume matching can also use **agent-in-the-loop semantic
+matching**. JobsFlow keeps a fact anchor separate from a capability upper bound,
+then asks the agent executing the job-search task to compare that profile with
+the JD's core duties. During `/setup`, the user chooses a low (conservative),
+medium (balanced), or high (broader) upper-bound calibration. This only changes
+the permitted transfer range and deterministic score caps; no setting turns
+potential into claimed experience. If a semantic verdict is not completed, the
+keyword score remains the explicit fallback and scanning continues.
+
 ## Quick start
 
 ```bash

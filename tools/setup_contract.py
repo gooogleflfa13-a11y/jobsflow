@@ -52,6 +52,7 @@ def build_setup_design_request(
     intent: str,
     resume_keywords: list[str],
     fallback: dict[str, Any],
+    semantic_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a machine-readable prompt contract without embedding the full résumé."""
     return {
@@ -70,6 +71,7 @@ def build_setup_design_request(
                 str(item).strip() for item in resume_keywords if str(item).strip()
             ][:40],
             "deterministic_fallback": deepcopy(fallback),
+            "semantic_profile": deepcopy(semantic_profile or {}),
         },
         "required_output": {
             "track_mapping": {
@@ -119,6 +121,7 @@ def build_setup_design_request(
             "do_not_infer_missing_values": True,
             "instructions": [
                 "Use résumé evidence and stated intent together.",
+                "Respect the user's semantic profile calibration; do not widen the upper bound silently.",
                 "Quick-check the target industry's common requirements using current, reliable sources.",
                 "Reflect material constraints such as schedule, location, authorization, and compensation.",
                 "Include industry-standard requirements only as fields to inspect, not as candidate facts.",

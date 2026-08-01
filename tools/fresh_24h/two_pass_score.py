@@ -145,7 +145,13 @@ def local_id_baseline(tracker: Path) -> dict[str, int]:
     return max_prefix_from_ids(ids)
 
 
-def score_hit(h: dict, teaser: str, *, jd_depth: str = "teaser"):
+def score_hit(
+    h: dict,
+    teaser: str,
+    *,
+    jd_depth: str = "teaser",
+    repo: Path | None = None,
+):
     return score_job(
         title=h.get("title") or "",
         company=h.get("company") or "",
@@ -155,6 +161,7 @@ def score_hit(h: dict, teaser: str, *, jd_depth: str = "teaser"):
         track_hint=h.get("track_hint") or "F",
         soft_flags=h.get("soft_flags") or "",
         jd_depth=jd_depth,
+        repo=repo,
     )
 
 
@@ -316,7 +323,7 @@ def run_two_pass(
     for h in hits:
         # Pass 1 — teaser / card only (no deep fetch)
         teaser1 = h.get("teaser") or ""
-        sc1 = score_hit(h, teaser1)
+        sc1 = score_hit(h, teaser1, repo=repo)
         h["_sc1"] = sc1
         if sc1.score < gate_pass1:
             meta["pass1_dropped"] += 1
@@ -353,7 +360,12 @@ def run_two_pass(
             depth = "teaser_capped"
 
         # Only claim deep JD in reason/confidence when enrich actually returned deep text
-        sc2 = score_hit(h, teaser2, jd_depth="deep" if depth == "deep" else "teaser")
+        sc2 = score_hit(
+            h,
+            teaser2,
+            jd_depth="deep" if depth == "deep" else "teaser",
+            repo=repo,
+        )
         h["_sc2"] = sc2
         h["_jd_depth"] = depth
 

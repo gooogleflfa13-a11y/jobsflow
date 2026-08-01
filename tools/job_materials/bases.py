@@ -24,6 +24,24 @@ from tools.job_materials.evidence import (
 from tools.job_materials.paths import LANES, bases_runtime_dir, load_lanes, masters_dir
 
 
+SEMANTIC_PROFILE_DEFAULT = {
+    "schema_version": 1,
+    "upper_bound_level": "medium",
+    "label": "中（平衡）",
+    "transfer_scope": "允许相邻职责和明确可迁移能力，但不等同于已有实操经历",
+    "transfer_score_cap": 4.5,
+    "upper_only_score_cap": 4.0,
+    "direct_facts_score_cap": 5.0,
+    "forbid_invented_experience": True,
+}
+
+DEFAULT_FORBIDDEN_CLAIMS = [
+    "不得把能力上沿写成已经承担过的实操职责",
+    "不得补造雇主、客户、工具、证书、牌照、年限、指标或结果",
+    "不得把相邻能力推断当作事实经历或已验证资格",
+]
+
+
 def hkt_now() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M HKT")
 
@@ -82,6 +100,41 @@ def sync_base_from_masters(root: Path, lane: str) -> dict[str, Any]:
             seen.add(k)
             skills_u.append(s)
 
+    # The semantic matcher receives two explicit layers: facts_anchor is what
+    # may be stated as experience; capability_upper is only a transferable
+    # potential layer.  The user's calibration is private setup state and is
+    # never inferred from a profession or a built-in legal profile.
+    try:
+        query_config = json.loads(
+            (Path(root) / "00_Profile" / "queries.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, TypeError):
+        query_config = {}
+    scoring = query_config.get("scoring_profile") if isinstance(query_config, dict) else {}
+    if not isinstance(scoring, dict):
+        scoring = {}
+    semantic_profile = dict(SEMANTIC_PROFILE_DEFAULT)
+    configured_semantic = scoring.get("semantic_profile")
+    if isinstance(configured_semantic, dict):
+        semantic_profile.update(configured_semantic)
+
+    existing = load_base(root, lane) or {}
+    facts_anchor = existing.get("facts_anchor") or chosen
+    capability_upper = existing.get("capability_upper")
+    if not isinstance(capability_upper, list) or not capability_upper:
+        capability_upper = [
+            {
+                "capability": skill,
+                "basis": "transferable_potential",
+                "not_experience": True,
+                "note": "可用于相邻岗位语义比较，不可直接写成已承担职责",
+            }
+            for skill in skills_u[:12]
+        ]
+    forbidden_claims = existing.get("forbidden_claims")
+    if not isinstance(forbidden_claims, list) or not forbidden_claims:
+        forbidden_claims = list(DEFAULT_FORBIDDEN_CLAIMS)
+
     base = {
         "base_id": lane,
         "label": meta["label"],
@@ -90,6 +143,10 @@ def sync_base_from_masters(root: Path, lane: str) -> dict[str, Any]:
         "emphasis": emp,
         "skills": skills_u[:16],
         "bullets": chosen,
+        "facts_anchor": facts_anchor[:12],
+        "capability_upper": capability_upper[:16],
+        "forbidden_claims": forbidden_claims[:16],
+        "semantic_profile": semantic_profile,
         "summary_seed": (
             f"Base track {lane} — {meta['label']}. "
             f"Emphasis: {', '.join(emp[:8])}."
@@ -203,7 +260,8 @@ def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
             "metric_tokens": sorted(claim_metrics),
         }
 
-    for b in base.get("bullets") or []:
+    fact_claims = base.get("facts_anchor") or base.get("bullets") or []
+    for b in fact_claims:
         claims.append(check("bullet", str(b)))
     for s in base.get("skills") or []:
         claims.append(check("skill", str(s)))
@@ -218,9 +276,9 @@ def factcheck_base(root: Path, base: dict[str, Any]) -> dict[str, Any]:
         "claims": claims,
         "checked_at": hkt_now(),
         "notes": [
-            "Fact-check is REQUIRED for role-type bases (A–F).",
+            "Fact-check is REQUIRED for role-type bases before semantic matching.",
             "Claims were matched to independent fact_evidence.json records; generated masters were excluded.",
-            "Per-JD tailor must use a passed base and must NOT silently invent or alter facts.",
+            "Per-JD tailor and semantic matching must use a passed base and must NOT silently invent or alter facts.",
         ],
     }
     return base

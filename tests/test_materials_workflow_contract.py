@@ -116,6 +116,29 @@ def test_setup_resume_runtime_is_used_as_factcheck_evidence(tmp_path, monkeypatc
     assert resume in load_evidence_blob(root, lane="A")
 
 
+def test_base_sync_separates_facts_anchor_and_capability_upper(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup, "REPO", tmp_path)
+    monkeypatch.setattr(setup, "extract_name", lambda text: "Example User")
+    monkeypatch.setattr(setup, "extract_phone", lambda text: "+852 0000 0000")
+    monkeypatch.setattr(setup, "extract_email", lambda text: "user@example.com")
+    monkeypatch.setattr(setup, "extract_education", lambda text: [])
+    monkeypatch.setattr(setup, "extract_languages", lambda text: [])
+    setup.generate_config(
+        "- Built and monitored an automated operations workflow with review checkpoints.",
+        "operations analyst",
+        {"method": "local_csv"},
+        {},
+        semantic_upper_level="low",
+    )
+    root = tmp_path / "JobSearch_2026"
+    base = sync_base_from_masters(root, "A")
+
+    assert base["facts_anchor"]
+    assert base["semantic_profile"]["upper_bound_level"] == "low"
+    assert all(item.get("not_experience") is True for item in base["capability_upper"])
+    assert base["forbidden_claims"]
+
+
 def test_clean_clone_selected_job_to_materials_pipeline(tmp_path, monkeypatch):
     """Exercise the documented selected-job handoff without private files."""
     monkeypatch.setattr(setup, "REPO", tmp_path)

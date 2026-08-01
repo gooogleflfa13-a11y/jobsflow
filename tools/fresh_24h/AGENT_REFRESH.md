@@ -34,8 +34,12 @@ runs must not advance the cursor. Use `--no-record` for previews and debugging.
 4. Retrieve the JD cache/structured detail; use Playwright only as a bounded
    fallback.
 5. Score pass 2 and record the actual JD depth.
-6. Write local/Google tracker rows only when requested.
-7. Never create application materials during scan.
+6. For deep rows, process pending semantic resume-match tasks with
+   `semantic_match_agent.py`; label each verdict as direct, transferable,
+   upper_only or none. The profile calibration caps transferable/upper-only
+   scores deterministically.
+7. Write local/Google tracker rows only when requested.
+8. Never create application materials during scan.
 
 Use a full JD for materials. If a portal remains shallow, mark `paste_needed` and
 ask for pasted text instead of fabricating requirements.
@@ -57,5 +61,7 @@ do not invent placeholder ranges.
 - Do not reinterpret an unconfigured template as search intent.
 - Do not spend unbounded time on WAF, CAPTCHA or browser recovery.
 - A single-job “deep analysis” request uses `deep_analyze_job.py`, not a teaser.
+- A pending semantic task is an enhancement, not a failure; if it is not
+  completed, keep the keyword score and report the pending count.
 - Keep search, tracking, materials and submission as separate user-authorized
   stages.

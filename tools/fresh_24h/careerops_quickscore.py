@@ -9,6 +9,7 @@ profession or candidate biography.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -40,6 +41,7 @@ class ScoreResult:
     confidence: str
     brief: str = ""  # 中文简述
     cap_notes: str = ""  # caps triggered, semicolon-joined
+    semantic_note: str = ""  # LLM semantic-resume-match note / fallback flag
 
 
 _PROFILE_NOTICES: set[str] = set()
@@ -275,6 +277,224 @@ def load_scoring_profile(repo: Path | None = None) -> dict[str, Any]:
     return profile
 
 
+def _semantic_resume_match(
+    *,
+    title: str,
+    company: str,
+    jd_text: str,
+    letter: str,
+    repo: Path | None = None,
+) -> dict[str, Any] | None:
+    """Agent-in-the-loop semantic resume-match (deep-JD pass only).
+
+    Does NOT call an external LLM API. Instead it writes a request file to
+    <tracker>/semantic_matches/pending/<key>.json containing the fixed lane
+    capability profile + the JD. The agent currently executing the task (the
+    same model doing the job search work) reads these pending files, applies its
+    own semantic understanding, and writes back resume_match (1-5) + note.
+
+    Returns:
+      - {"resume": score, "note": ...} when an already-completed verdict file
+        exists for this job (re-scoring after agent filled it in).
+      - None otherwise (caller falls back to keyword-hit score; the pending
+        request has been created for the agent to fill in).
+    """
+    jobsearch_root = _jobsearch_root(repo)
+    base_path = jobsearch_root / "00_Profile" / "bases_runtime"
+    cap = {}
+    try:
+        cap = json.loads((base_path / f"{letter}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    factcheck = cap.get("factcheck") if isinstance(cap.get("factcheck"), dict) else {}
+    if not cap or factcheck.get("status") not in {"passed", "capability_profile"}:
+        # Semantic matching must never create a high-confidence judgement from
+        # an unverified or missing base. The normal keyword score remains the
+        # explicit fallback.
+        return None
+
+    facts = cap.get("facts_anchor") or cap.get("bullets") or []
+    capability_upper = cap.get("capability_upper") or []
+    forbidden = cap.get("forbidden_claims") or []
+    semantic_profile = cap.get("semantic_profile") if isinstance(cap.get("semantic_profile"), dict) else {}
+    level = str(semantic_profile.get("upper_bound_level") or "medium").casefold()
+    if level not in {"low", "medium", "high"}:
+        level = "medium"
+    upper_cap = float(semantic_profile.get("upper_only_score_cap") or {"low": 3.5, "medium": 4.0, "high": 4.5}[level])
+    transfer_cap = float(semantic_profile.get("transfer_score_cap") or {"low": 4.0, "medium": 4.5, "high": 5.0}[level])
+
+    def profile_lines(value: Any) -> list[str]:
+        lines = []
+        for item in value if isinstance(value, list) else []:
+            if isinstance(item, dict):
+                text = str(item.get("capability") or item.get("text") or "").strip()
+                if text:
+                    lines.append(text)
+            elif str(item).strip():
+                lines.append(str(item).strip())
+        return lines
+
+    facts_anchor = profile_lines(facts)[:12]
+    upper_lines = profile_lines(capability_upper)[:16]
+    profile_text = "\n".join(
+        [
+            f"求职意向画像（{letter}）: {cap.get('label') or letter}",
+            f"事实基线（真实经历）:",
+        ]
+        + [f"  - {b}" for b in facts_anchor[:8]]
+        + [
+            "能力上沿（仅可迁移潜力，不是已拥有的实操经历）:",
+            *[f"  - {b}" for b in upper_lines[:10]],
+        ]
+        + [
+            f"画像上沿幅度：{level}；能力上沿单独支撑的简历匹配最高 {upper_cap:.1f}；可迁移判断最高 {transfer_cap:.1f}",
+        ]
+        + [f"禁止声称: {'；'.join(forbidden)}" if forbidden else "禁止声称: 无"]
+    )
+
+    key = _semantic_task_key(title, company)
+    tracker = jobsearch_root / "02_Tracker"
+    done_dir = tracker / "semantic_matches" / "done"
+    pending_dir = tracker / "semantic_matches" / "pending"
+
+    # If an agent already filled in a verdict, use it.
+    done_file = done_dir / f"{key}.json"
+    if done_file.exists():
+        try:
+            verdict = json.loads(done_file.read_text(encoding="utf-8"))
+            score = float(verdict.get("resume_match"))
+            basis = str(verdict.get("basis") or "upper_only").casefold()
+            score = _semantic_score_cap(cap, score, basis)
+            note = str(verdict.get("note") or "")
+            return {
+                "resume": score,
+                "note": f"语义简历匹配({letter})[{basis}]：{note}",
+            }
+        except (OSError, ValueError, TypeError):
+            pass
+
+    # Otherwise emit a pending request for the executing agent to fill in.
+    try:
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        pending = {
+            "task": "semantic_resume_match",
+            "key": key,
+            "title": title,
+            "company": company,
+            "letter": letter,
+            "lane_label": cap.get("label") or letter,
+            "profile": profile_text,
+            "semantic_profile": {
+                "upper_bound_level": level,
+                "upper_only_score_cap": upper_cap,
+                "transfer_score_cap": transfer_cap,
+            },
+            "jd_snippet": jd_text[:6000],
+            "instruction": (
+                "用你的语义理解，判断上方「求职意向画像」对 JD 核心职责的支持度。"
+                "先把依据标成 direct（事实基线直接支持）、transferable（相邻能力可迁移）、"
+                "upper_only（只来自能力上沿）或 none。能力上沿不得当作已拥有实操经验；禁止夸大。"
+                "写入 resume_match(1.0-5.0 一位小数)、basis 和 note(一句话中文结论)。"
+            ),
+            "status": "pending",
+        }
+        pending_file = pending_dir / f"{key}.json"
+        if not pending_file.exists():
+            pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return None
+
+
+def _semantic_task_key(title: str, company: str) -> str:
+    raw = f"{title}|{company}".strip().casefold()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _semantic_lane_classify(
+    *,
+    title: str,
+    company: str,
+    jd_text: str,
+    profile: dict[str, Any],
+    repo: Path | None = None,
+) -> str | None:
+    """Agent-in-the-loop lane classification (deep-JD pass only).
+
+    Writes a `lane_classify` pending request containing the JD + all defined
+    lane labels. The executing agent decides which lane (A-G) the job's nature
+    belongs to and writes back a verdict. Returns the agent's chosen letter when
+    a verdict exists, else None (caller falls back to rule-based lane).
+    """
+    track_mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
+    lane_labels = {k: v for k, v in track_mapping.items() if k in "ABCDEFG"}
+    if not lane_labels:
+        return None
+    jobsearch_root = _jobsearch_root(repo)
+    tracker = jobsearch_root / "02_Tracker"
+    done_dir = tracker / "semantic_matches" / "done"
+    pending_dir = tracker / "semantic_matches" / "pending"
+    key = "lane_" + _semantic_task_key(title, company)
+
+    done_file = done_dir / f"{key}.json"
+    if done_file.exists():
+        try:
+            verdict = json.loads(done_file.read_text(encoding="utf-8"))
+            letter = str(verdict.get("letter") or "").strip().upper()
+            if letter in "ABCDEFG":
+                return letter
+        except (OSError, ValueError):
+            pass
+
+    try:
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        labels_txt = "\n".join(f"  {k}: {v}" for k, v in lane_labels.items())
+        pending = {
+            "task": "lane_classify",
+            "key": key,
+            "title": title,
+            "company": company,
+            "lane_labels": lane_labels,
+            "jd_snippet": jd_text[:6000],
+            "instruction": (
+                "判断上方 JD 的职位本质属于哪个求职画像类别。可选类别：\n"
+                + labels_txt
+                + "\n只输出最匹配的一个字母（A-G）。若职位本质偏向创新/科技/加密/数字资产业务则选 G；"
+                "偏向合规/AML/风险则选 C；以此类推。写入 letter(单个字母) 和 note(一句话中文理由)。"
+            ),
+            "status": "pending",
+        }
+        pending_file = pending_dir / f"{key}.json"
+        if not pending_file.exists():
+            pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return None
+
+
+def _jobsearch_root(repo: Path | None = None) -> Path:
+    configured = os.environ.get("JOBSEARCH_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if repo is not None:
+        root = Path(repo).expanduser().resolve()
+        return root if root.name == "JobSearch_2026" else root / "JobSearch_2026"
+    return Path(__file__).resolve().parents[2] / "JobSearch_2026"
+
+
+def _semantic_score_cap(cap: dict[str, Any], score: float, basis: str) -> float:
+    """Apply a deterministic upper-bound guard to an agent verdict."""
+    semantic = cap.get("semantic_profile") if isinstance(cap.get("semantic_profile"), dict) else {}
+    level = str(semantic.get("upper_bound_level") or "medium").casefold()
+    caps = {
+        "low": {"direct": 5.0, "transferable": 4.0, "upper_only": 3.5, "none": 2.5},
+        "medium": {"direct": 5.0, "transferable": 4.5, "upper_only": 4.0, "none": 2.5},
+        "high": {"direct": 5.0, "transferable": 5.0, "upper_only": 4.5, "none": 2.5},
+    }
+    cap_value = caps.get(level, caps["medium"]).get(basis, caps["medium"]["upper_only"])
+    return max(1.0, min(cap_value, round(float(score), 1)))
+
+
 def score_job(
     *,
     title: str,
@@ -287,11 +507,12 @@ def score_job(
     jd_depth: str = "teaser",
     context: str | None = None,
     profile: dict[str, Any] | None = None,
+    repo: Path | None = None,
 ) -> ScoreResult:
     """Cross-industry scorer driven by setup output, never a built-in biography."""
     if context is not None and (jd_depth == "teaser" or not jd_depth):
         jd_depth = context
-    profile = dict(profile if profile is not None else load_scoring_profile())
+    profile = dict(profile if profile is not None else load_scoring_profile(repo))
     text = f"{title} {teaser} {company}"
 
     core = _clean_keywords(profile.get("core_keywords"))
@@ -364,6 +585,75 @@ def score_job(
         low = int(salary_match.group(1).replace(",", ""))
         pay = 4.0 if low >= minimum_salary else 2.0
 
+    # Determine lane (letter) early so semantic resume matching can load the
+    # lane-specific capability profile (A-G). Keeps eligibility rules unchanged.
+    # On deep-JD pass, the executing agent classifies the lane semantically;
+    # rule-based classification is the deterministic fallback.
+    rules = [r for r in (profile.get("track_rules") or []) if isinstance(r, dict)]
+    rule_letter = (track_hint or "F")[0].upper()
+    if rule_letter not in "ABCDEFG":
+        rule_letter = "F"
+    # Innovation/tech lane (G) takes priority BUT only when the JD is clearly
+    # crypto/web3/digital-asset flavoured (strong signals). Generic words like
+    # technology/platform/fintech that appear in any modern JD must NOT trigger G,
+    # otherwise traditional compliance roles get misclassified into G.
+    g_rule = next((r for r in rules if str(r.get("letter") or "").upper() == "G"), None)
+    if g_rule:
+        g_strong = _clean_keywords(g_rule.get("strong_patterns"))
+        if not g_strong or _keyword_hits(text, g_strong):
+            rule_letter = "G"
+    if rule_letter != "G":
+        # Compliance/AML (C) signals (weak: compliance/regulatory/risk, strong:
+        # aml/kyc/financial crime/cdd/sanctions) beat commercial (A/B): AML roles
+        # also mention due diligence (B) or research (A), so without this
+        # precedence bank/fund/investment compliance jobs get misclassified.
+        c_rule = next((r for r in rules if str(r.get("letter") or "").upper() == "C"), None)
+        c_weak = _clean_keywords(c_rule.get("patterns")) if c_rule else []
+        c_strong = _clean_keywords(c_rule.get("strong_patterns")) if c_rule else []
+        c_hits = _keyword_hits(text, c_weak) if c_weak else []
+        if c_hits and (not c_strong or _keyword_hits(text, c_strong) or c_strong == c_weak):
+            rule_letter = "C"
+        else:
+            for rule in rules:
+                if str(rule.get("letter") or "").upper() in ("G", "C"):
+                    continue
+                if _keyword_hits(text, _clean_keywords(rule.get("patterns"))):
+                    candidate = str(rule.get("letter") or "").upper()
+                    if candidate in "ABCDEFG":
+                        rule_letter = candidate
+                        break
+
+    letter = rule_letter
+    if _is_deep_depth(jd_depth):
+        agent_lane = _semantic_lane_classify(
+            title=title,
+            company=company,
+            jd_text=teaser or "",
+            profile=profile,
+            repo=repo,
+        )
+        if agent_lane is not None:
+            letter = agent_lane
+    mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
+    track = str(mapping.get(letter) or f"Track {letter}")
+
+    # Semantic resume matching: on deep-JD pass, ask the executing agent to judge how well the
+    # candidate's capability profile (facts anchor + capability upper) supports the
+    # JD's core duties, instead of naive keyword-hit counting. On failure falls
+    # back to the keyword-hit score and flags it.
+    semantic_note = None
+    if _is_deep_depth(jd_depth):
+        sem = _semantic_resume_match(
+            title=title,
+            company=company,
+            jd_text=teaser or "",
+            letter=letter,
+            repo=repo,
+        )
+        if sem is not None:
+            resume = sem["resume"]
+            semantic_note = sem.get("note")
+
     dims = {
         "resume": resume,
         "eligibility": eligibility,
@@ -400,20 +690,6 @@ def score_job(
     score = round(min(raw, cap) * 20) / 20
     grade = _grade(score)
     tier = _tier(grade, score)
-
-    letter = (track_hint or "F")[0].upper()
-    if letter not in "ABCDEF":
-        letter = "F"
-    for rule in profile.get("track_rules") or []:
-        if not isinstance(rule, dict):
-            continue
-        if _keyword_hits(text, _clean_keywords(rule.get("patterns"))):
-            candidate = str(rule.get("letter") or "").upper()
-            if candidate in "ABCDEF":
-                letter = candidate
-                break
-    mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
-    track = str(mapping.get(letter) or f"Track {letter}")
 
     keys = []
     gaps = []
@@ -457,6 +733,8 @@ def score_job(
         salary=salary,
         source=source,
     )
+    if semantic_note:
+        reason = f"{reason}｜{semantic_note}"
     return ScoreResult(
         score=score,
         grade=grade,
@@ -477,6 +755,7 @@ def score_job(
         confidence=conf,
         brief=brief,
         cap_notes="；".join(cap_notes),
+        semantic_note=semantic_note or "",
     )
 
 

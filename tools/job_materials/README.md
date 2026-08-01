@@ -5,10 +5,13 @@ never create application materials.
 
 ## Quality boundary
 
-- A–F base résumés represent the six role directions created during setup.
+- A–F base résumés represent the six fact-checked role directions created during setup; G is a separate innovation/technology capability lane with its own factual CV and Cover Letter masters under `01_Masters/G_innovation_tech/`.
 - Each base must pass fact-check against the independent `00_Profile/fact_evidence.json`
   and current facts baseline before it can support tailoring; generated masters and
   archived documents cannot prove their own claims.
+- Runtime bases expose `facts_anchor`, `capability_upper`, `forbidden_claims` and
+  the private semantic calibration (`low` / `medium` / `high`). The upper layer is
+  a transfer hypothesis only; it is never valid wording for completed experience.
 - High-quality tailoring requires the full JD. If cache, structured retrieval and
   bounded browser fallback remain shallow, use `jd set` to paste the text.
 - Tailoring may select, reorder and conservatively rephrase verified evidence. It
