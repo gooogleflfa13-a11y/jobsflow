@@ -46,6 +46,54 @@ the permitted transfer range and deterministic score caps; no setting turns
 potential into claimed experience. If a semantic verdict is not completed, the
 keyword score remains the explicit fallback and scanning continues.
 
+### Three model intervention points, with deterministic work around them
+
+The profile is not a mechanical “resume keyword = job keyword” comparison. It
+combines verified resume facts, stated intent, a quick check of industry context,
+and the user's chosen upper-bound calibration. Once confirmed, the profile stays
+stable; a single job cannot silently rewrite it.
+
+```text
+Low frequency: /setup or /intent confirm
+  resume facts + job intent + industry quick-check
+                         │
+                         ▼
+             [LLM 1: build profile] ──→ user confirms ──→ facts_anchor / capability_upper
+                                                               │
+Every deep pass: check URL cache first (hit = zero network requests) │
+  miss → LinkedIn CLI → JobsDB browser fallback → CT no browser → teaser fallback
+                         │
+                         └──────── cached JD ────────┐
+                                                       │
+                              ┌────────────────────────┴────────────────────┐
+                              ▼                                             ▼
+                  [LLM 2: position profile]                    [LLM 3: resume match]
+                  company nature + role type                    direct / transferable /
+                  lane + company_brief                          upper_only / none + score
+                              └────────────────────────┬────────────────────┘
+                                                       ▼
+                         deterministic caps, eligibility, IDs, tracker write
+```
+
+The position-profile and resume-match tasks consume the JD fetched during the
+scan; they do not reopen a portal. Models with less reasoning capacity can run
+the explicit `list → show → complete` task contract. If a task is unfinished,
+the lane and keyword score remain deterministic fallbacks, so a scan does not
+break or silently claim a deep semantic verdict.
+
+### Energy-saving controls
+
+- URL-keyed JD cache entries are valid for 60 days by default and store the full
+  text, source, character count and fetch time. Scoring, materials and rescoring
+  reuse that cache.
+- Only pass-1 survivors enter deep work. Use `--max-deep` to cap deep retrievals;
+  `/scan temp` only checks jobs since the previous refresh.
+- LinkedIn uses CLI detail first; JobsDB is the only browser fallback; CTgoodjobs
+  does not open a browser by default. Set `PORTAL_JD_BROWSER=0` to disable browser
+  retrieval completely.
+- PDF conversion also uses a content-hash cache, so unchanged DOCX files are not
+  converted again.
+
 ## Quick start
 
 ```bash
@@ -70,7 +118,8 @@ Then use:
 /apply C0-005 C
 ```
 
-During `/setup`, the assistant can propose A–F directions, scoring weights and
+During `/setup`, the assistant can propose A–F directions (plus an optional G
+capability lane), scoring weights and
 tracker columns based on the user's résumé evidence, stated constraints and
 industry context. The proposal is constrained by a machine-readable schema and
 is written only to the private workspace; invalid output falls back to the
@@ -88,7 +137,11 @@ the user wants to add or replace a direction, the assistant asks first.
 
 ## Materials
 
-Materials use a fact-checked A–F base, full-JD cache, and a source-aware company brief. CV emphasis changes with the JD capability themes and company context. Cover letters use verified company facts and a genuine candidate interest angle; unsupported metrics, experience, company claims, or interest are never invented.
+Materials use fact-checked direction bases (A–F, with an optional G capability
+lane), the full-JD cache, and a source-aware company brief. CV emphasis changes
+with the JD capability themes and company context. Cover letters use verified
+company facts and a genuine candidate interest angle; unsupported metrics,
+experience, company claims, or interest are never invented.
 
 A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
 
@@ -137,7 +190,7 @@ and prevents important files from getting lost in a spreadsheet or chat thread.
 ```text
 JobSearch_2026/
 ├── 00_Profile/                    # CV facts, intent and search configuration
-├── 01_Masters/                   # A–F direction masters and job packages
+├── 01_Masters/                   # A–F direction masters; optional G capability lane
 │   └── <direction>/<tier>/<job-id_company>/
 │       ├── jd_full.md             # Full JD
 │       ├── company_research.md    # Company facts, business and sources

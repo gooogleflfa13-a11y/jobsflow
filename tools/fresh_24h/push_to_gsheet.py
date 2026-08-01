@@ -231,6 +231,7 @@ def score_new_hits(
             track_hint=h.get("track_hint") or "F",
             soft_flags=h.get("soft_flags") or "",
             repo=repo or REPO,
+            jd_url=h.get("url") or "",
         )
         if sc.score < min_score:
             dropped.append(

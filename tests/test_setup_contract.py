@@ -117,3 +117,26 @@ def test_invalid_low_model_schema_falls_back_without_polluting_product():
     assert result["ready"] is False
     assert result["validation_errors"]
     assert result["design"]["track_mapping"]["A"] == "Core"
+
+
+def test_optional_g_capability_lane_is_accepted_without_becoming_required():
+    proposal = {
+        "track_mapping": {**_fallback()["track_mapping"], "G": "Innovation capability"},
+        "extra_columns": [],
+        "relevance_keywords": ["operations", "innovation"],
+        "adjacent_keywords": ["technology"],
+        "track_rules": [{"letter": "G", "patterns": ["innovation", "technology"]}],
+        "scoring_weights": _fallback()["scoring_weights"],
+        "industry_context": {
+            "target_industry": "Technology operations",
+            "common_requirements": ["cross-functional delivery"],
+            "source_urls": ["https://example.org/industry-guide"],
+            "uncertainties": [],
+        },
+    }
+
+    result = resolve_setup_design(proposal, fallback=_fallback())
+
+    assert result["ready"] is True
+    assert result["design"]["track_mapping"]["G"] == "Innovation capability"
+    assert result["design"]["track_rules"][0]["letter"] == "G"

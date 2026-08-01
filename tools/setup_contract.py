@@ -43,6 +43,7 @@ BASE_TRACKER_COLUMNS = [
 ALLOWED_COLUMN_TYPES = {"text", "number", "date", "url", "boolean"}
 WEIGHT_KEYS = {"resume", "eligibility", "direction", "industry", "work", "pay"}
 TRACK_KEYS = set("ABCDEF")
+OPTIONAL_TRACK_KEYS = {"G"}
 MAX_EXTRA_COLUMNS = 8
 MAX_KEYWORDS = 40
 
@@ -76,7 +77,8 @@ def build_setup_design_request(
         "required_output": {
             "track_mapping": {
                 "required_keys": list("ABCDEF"),
-                "description": "Six distinct role directions, not seniority tiers.",
+                "optional_keys": ["G"],
+                "description": "Six distinct role directions, not seniority tiers; G may be used for a separately verified innovation/technology capability lane.",
             },
             "extra_columns": {
                 "description": (
@@ -90,7 +92,7 @@ def build_setup_design_request(
                 "description": "Related roles worth retaining with lower confidence."
             },
             "track_rules": {
-                "description": "Keyword patterns mapping roles to A-F tracks."
+                "description": "Keyword patterns mapping roles to A-F tracks; optional G capability lane is allowed when supported by the private profile."
             },
             "scoring_weights": {
                 "required_keys": sorted(WEIGHT_KEYS),
@@ -148,12 +150,13 @@ def validate_setup_design(proposal: Any) -> tuple[dict[str, Any], list[str]]:
         return {}, ["proposal must be a JSON object"]
 
     mapping = proposal.get("track_mapping")
-    if not isinstance(mapping, dict) or set(mapping) != TRACK_KEYS:
-        errors.append("track_mapping must contain exactly A-F")
+    mapping_keys = set(mapping) if isinstance(mapping, dict) else set()
+    if not isinstance(mapping, dict) or not TRACK_KEYS.issubset(mapping_keys) or not mapping_keys.issubset(TRACK_KEYS | OPTIONAL_TRACK_KEYS):
+        errors.append("track_mapping must contain A-F and may contain optional G")
         mapping = {}
-    elif any(not str(mapping[key]).strip() for key in TRACK_KEYS):
+    elif any(not str(mapping[key]).strip() for key in mapping_keys):
         errors.append("track_mapping labels must be non-empty")
-    elif len({str(mapping[key]).strip().casefold() for key in TRACK_KEYS}) != 6:
+    elif len({str(mapping[key]).strip().casefold() for key in mapping_keys}) != len(mapping_keys):
         errors.append("track_mapping labels must be distinct")
 
     extra_columns = proposal.get("extra_columns")
@@ -198,8 +201,8 @@ def validate_setup_design(proposal: Any) -> tuple[dict[str, Any], list[str]]:
             continue
         letter = str(raw.get("letter") or "").upper()
         patterns = _strings(raw.get("patterns"), limit=12)
-        if letter not in TRACK_KEYS or not patterns:
-            errors.append(f"track_rules[{index}] needs A-F letter and patterns")
+        if letter not in TRACK_KEYS | OPTIONAL_TRACK_KEYS or not patterns:
+            errors.append(f"track_rules[{index}] needs A-G letter and patterns")
             continue
         rules.append({"letter": letter, "patterns": patterns})
 
@@ -255,7 +258,7 @@ def validate_setup_design(proposal: Any) -> tuple[dict[str, Any], list[str]]:
 
     normalized = {
         "track_mapping": {
-            key: str(mapping.get(key) or "").strip() for key in "ABCDEF"
+            key: str(mapping.get(key) or "").strip() for key in sorted(mapping_keys)
         },
         "extra_columns": normalized_columns,
         "relevance_keywords": relevance,

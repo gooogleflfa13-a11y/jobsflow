@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from careerops_quickscore import score_job  # noqa: E402
+from tools.fresh_24h.jd_cache import save_jd_cache  # noqa: E402
 from linkedin_enrich import (  # noqa: E402
     build_deep_teaser,
     enrich_one_deep,
@@ -75,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     if not teaser and args.title:
         teaser = f"(detail failed: {res.error})"
 
+    if res.ok and res.description:
+        save_jd_cache(url, res.description, source="linkedin_enrich", root=repo)
+
     sc = score_job(
         title=title,
         company=company,
@@ -85,6 +89,14 @@ def main(argv: list[str] | None = None) -> int:
         soft_flags="",
         jd_depth="deep" if res.ok else "teaser_fallback",
         repo=repo,
+        jd_url=url,
+        jd_full=res.description if res.ok else None,
+        jd_cache_meta={
+            "url": url,
+            "source": "linkedin_enrich",
+            "chars": len(res.description),
+            "mode": "fetched",
+        } if res.ok else None,
     )
 
     jid = res.job_id or extract_linkedin_job_id(args.url_or_id) or "unknown"

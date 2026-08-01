@@ -72,7 +72,15 @@ def try_linkedin_deep(url: str, repo: Path = REPO) -> tuple[str, dict[str, Any]]
     desc = ""
     if res.raw:
         desc = str(res.raw.get("description") or res.raw.get("fullDescription") or teaser)
-    return desc or teaser, {
+    desc = desc or teaser
+    if desc:
+        try:
+            from tools.fresh_24h.jd_cache import save_jd_cache as _sv_cache
+
+            _sv_cache(url, desc, source="linkedin_enrich", root=repo)
+        except (ImportError, OSError):
+            pass
+    return desc, {
         "ok": True,
         "job_id": res.job_id,
         "title": (res.raw or {}).get("title"),
@@ -202,6 +210,23 @@ def enrich_package(package: Path, root: Path, repo: Path = REPO) -> list[str]:
             "preserved user-pasted JD; automatic enrichment skipped (source=user_paste)"
         )
         return notes
+
+    # Reuse the scan-time full-text cache for every portal before attempting
+    # any structured or browser retrieval. This is the zero-network path for
+    # materials generation and preserves the scan as the single JD fetch.
+    try:
+        from tools.fresh_24h.jd_cache import load_jd_cache as _ld_cache
+
+        cached_text, cached_meta = _ld_cache(canon, repo)
+        if cached_text:
+            write_jd(root, package, cached_text, url=canon, source="cache")
+            notes.append(
+                f"JD cache hit (reused from scan, {len(cached_text)} chars; "
+                f"source={cached_meta.get('source', 'cache')})"
+            )
+            return notes
+    except (ImportError, OSError):
+        pass
 
     if "linkedin.com" in canon:
         desc, meta = try_linkedin_deep(canon, repo=repo)

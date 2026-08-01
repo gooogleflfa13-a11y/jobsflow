@@ -15,14 +15,30 @@ from typing import Any
 from tools.io_utils import atomic_write_json
 
 
+def _workspace_root(root: Path) -> Path:
+    """Accept either the repository root or an already-resolved private root."""
+    root = Path(root).expanduser().resolve()
+    return root if root.name == "JobSearch_2026" else root / "JobSearch_2026"
+
+
+def jd_cache_key(url: str) -> str:
+    """Stable URL key shared by scoring, materials and agent task metadata."""
+    return hashlib.sha256((url or "").encode("utf-8")).hexdigest()[:16]
+
+
+def jd_cache_path(url: str, root: Path) -> Path:
+    return jd_cache_dir(root) / f"{jd_cache_key(url)}.json"
+
+
 def jd_cache_dir(root: Path) -> Path:
-    d = root / "JobSearch_2026" / "02_Tracker" / "jds" / "cache"
+    d = _workspace_root(root) / "02_Tracker" / "jds" / "cache"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _url_key(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    # Backward-compatible private alias used by older callers.
+    return jd_cache_key(url)
 
 
 def save_jd_cache(
@@ -34,14 +50,13 @@ def save_jd_cache(
 ) -> dict[str, Any]:
     entry = {
         "url": url,
+        "cache_key": jd_cache_key(url),
         "source": source,
         "text": text,
         "chars": len(text),
         "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    cache_dir = jd_cache_dir(root)
-    key = _url_key(url)
-    path = cache_dir / f"{key}.json"
+    path = jd_cache_path(url, root)
     atomic_write_json(path, entry)
     return entry
 
@@ -54,9 +69,7 @@ def load_jd_cache(
     min_chars: int = 100,
 ) -> tuple[str | None, dict[str, Any]]:
     """Return (text, meta) if cache hit and fresh; (None, {}) otherwise."""
-    cache_dir = jd_cache_dir(root)
-    key = _url_key(url)
-    path = cache_dir / f"{key}.json"
+    path = jd_cache_path(url, root)
     if not path.exists():
         return None, {}
     try:

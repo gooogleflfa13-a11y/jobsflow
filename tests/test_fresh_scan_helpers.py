@@ -15,6 +15,7 @@ from tools.fresh_24h.fresh_24h_scan import (
     now_utc,
 )
 from tools.fresh_24h import two_pass_score
+from tools.fresh_24h.jd_cache import jd_cache_key, jd_cache_path, load_jd_cache, save_jd_cache
 from tools.fresh_24h.local_tracker import merge_scored_rows
 from tools.fresh_24h.tracker_schema import merge_tracker_headers
 
@@ -138,6 +139,44 @@ def test_jobsdb_deep_enrichment_reuses_url_cache(monkeypatch, tmp_path):
     assert text == cached
     assert depth == "deep"
     assert hit["_deep_jd_full"] == cached
+
+
+def test_jd_cache_is_url_keyed_and_accepts_repo_or_private_root(tmp_path):
+    url = "https://www.linkedin.com/jobs/view/123456789"
+    text = "A full job description with enough detail for the shared cache." * 3
+
+    entry = save_jd_cache(url, text, source="linkedin_enrich", root=tmp_path)
+
+    assert entry["cache_key"] == jd_cache_key(url)
+    assert entry["chars"] == len(text)
+    assert jd_cache_path(url, tmp_path).exists()
+    loaded, meta = load_jd_cache(
+        url,
+        tmp_path / "JobSearch_2026",
+        min_chars=100,
+    )
+    assert loaded == text
+    assert meta["source"] == "linkedin_enrich"
+
+
+def test_ct_cache_is_checked_before_browser_policy(monkeypatch, tmp_path):
+    cached = "Cached CT full JD text with enough content for a deep pass." * 3
+    monkeypatch.setattr(
+        two_pass_score,
+        "_load_cache",
+        lambda url, repo: (cached, {"source": "user_paste", "cache_key": "ct-key"}),
+    )
+    hit = {
+        "url": "https://hk.ctgoodjobs.hk/job/12345",
+        "teaser": "short teaser",
+    }
+
+    text, depth = two_pass_score.deep_enrich_hit(hit, repo=tmp_path, use_browser=True)
+
+    assert text == cached[: two_pass_score.DEEP_DESC_CHARS]
+    assert depth == "deep"
+    assert hit["_enrich"]["mode"] == "cache"
+    assert hit["_jd_cache_meta"]["cache_key"] == "ct-key"
 
 
 def test_linkedin_date_only_is_soft_flagged_not_rejected_in_temp_window():

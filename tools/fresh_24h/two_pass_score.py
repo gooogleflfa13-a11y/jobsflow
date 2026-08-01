@@ -151,6 +151,7 @@ def score_hit(
     *,
     jd_depth: str = "teaser",
     repo: Path | None = None,
+    jd_full: str | None = None,
 ):
     return score_job(
         title=h.get("title") or "",
@@ -162,15 +163,18 @@ def score_hit(
         soft_flags=h.get("soft_flags") or "",
         jd_depth=jd_depth,
         repo=repo,
+        jd_url=h.get("url") or "",
+        jd_full=jd_full,
+        jd_cache_meta=h.get("_jd_cache_meta") if isinstance(h.get("_jd_cache_meta"), dict) else None,
     )
 
 
-def _save_cache(url: str, text: str, *, source: str, repo: Path) -> None:
+def _save_cache(url: str, text: str, *, source: str, repo: Path) -> dict[str, Any]:
     try:
         from jd_cache import save_jd_cache as _sv
-        _sv(url, text, source=source, root=repo)
-    except ImportError:
-        pass
+        return _sv(url, text, source=source, root=repo)
+    except (ImportError, OSError):
+        return {}
 
 
 def _load_cache(url: str, repo: Path) -> tuple[str | None, dict]:
@@ -186,10 +190,11 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
     Return (text_for_pass2, depth_label).
 
     Order:
-      1) LinkedIn CLI detail when possible
-      2) Playwright for **JobsDB only** (and LinkedIn if CLI failed)
-      3) **CTgoodjobs: never open browser** — teaser only (saves compute; WAF often fails)
-      4) teaser / paste_needed fallback
+      1) URL-keyed JD cache (zero network requests)
+      2) LinkedIn CLI detail when possible
+      3) Playwright for **JobsDB only** (and LinkedIn if CLI failed)
+      4) **CTgoodjobs: never open browser** — teaser only (saves compute; WAF often fails)
+      5) teaser / paste_needed fallback
 
     URL should already be normalized early; re-normalize is idempotent.
     Set use_browser=False or env PORTAL_JD_BROWSER=0 to skip all browser deep.
@@ -200,7 +205,29 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
     env_browser = os.environ.get("PORTAL_JD_BROWSER", "1").strip() not in {"0", "false", "no"}
     use_browser = bool(use_browser and env_browser)
 
-    # CT: never waste browser cycles — short teaser is enough for scoring
+    # The URL cache is the first and cheapest source for every portal.  This
+    # must run before the CT browser policy so a user-pasted or previously
+    # fetched full JD is still reusable without any new network request.
+    cached_text, cached_meta = _load_cache(url, repo)
+    if cached_text:
+        h["_enrich"] = {
+            "mode": "cache",
+            "ok": True,
+            "cache_key": cached_meta.get("cache_key"),
+            "source": cached_meta.get("source", "cache"),
+            "desc_len": len(cached_text),
+        }
+        h["_jd_cache_meta"] = {
+            "url": url,
+            "source": cached_meta.get("source", "cache"),
+            "chars": len(cached_text),
+            "cache_key": cached_meta.get("cache_key"),
+            "mode": "cache",
+        }
+        h["_deep_jd_full"] = cached_text
+        return cached_text[:DEEP_DESC_CHARS], "deep"
+
+    # CT: never waste browser cycles — short teaser is enough for scoring.
     if "ctgoodjobs.hk" in portal_host:
         h["_enrich"] = {
             "mode": "ctgoodjobs_skip_browser",
@@ -209,17 +236,6 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
             "url": url,
         }
         return h.get("teaser") or "", "teaser"
-
-    cached_text, cached_meta = _load_cache(url, repo)
-    if cached_text:
-        h["_enrich"] = {
-            "mode": "cache",
-            "ok": True,
-            "source": cached_meta.get("source", "cache"),
-            "desc_len": len(cached_text),
-        }
-        h["_deep_jd_full"] = cached_text
-        return cached_text[:DEEP_DESC_CHARS], "deep"
 
     if is_linkedin_url(url):
         res = enrich_one_deep(url, repo=repo)
@@ -232,7 +248,14 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
                 "desc_len": len(res.description),
             }
             h["_deep_jd_full"] = res.description
-            _save_cache(url, res.description, source="linkedin_enrich", repo=repo)
+            cache_meta = _save_cache(url, res.description, source="linkedin_enrich", repo=repo)
+            h["_jd_cache_meta"] = {
+                "url": url,
+                "source": "linkedin_enrich",
+                "chars": len(res.description),
+                "cache_key": cache_meta.get("cache_key") if isinstance(cache_meta, dict) else None,
+                "mode": "fetched",
+            }
             return text, "deep"
         h["_enrich"] = {"mode": "deep", "ok": False, "error": getattr(res, "error", None)}
         if not use_browser:
@@ -268,7 +291,14 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
             }
             h["teaser"] = fres.text[:3000]
             h["_deep_jd_full"] = fres.text
-            _save_cache(url, fres.text, source=f"browser_{fres.portal}", repo=repo)
+            cache_meta = _save_cache(url, fres.text, source=f"browser_{fres.portal}", repo=repo)
+            h["_jd_cache_meta"] = {
+                "url": url,
+                "source": f"browser_{fres.portal}",
+                "chars": len(fres.text),
+                "cache_key": cache_meta.get("cache_key") if isinstance(cache_meta, dict) else None,
+                "mode": "fetched",
+            }
             return fres.text[:DEEP_DESC_CHARS], "deep"
         h["_enrich"] = {
             "mode": "browser",
@@ -365,6 +395,7 @@ def run_two_pass(
             teaser2,
             jd_depth="deep" if depth == "deep" else "teaser",
             repo=repo,
+            jd_full=h.get("_deep_jd_full") if depth == "deep" else None,
         )
         h["_sc2"] = sc2
         h["_jd_depth"] = depth

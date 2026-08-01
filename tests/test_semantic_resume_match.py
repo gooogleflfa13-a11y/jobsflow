@@ -90,8 +90,11 @@ def test_completed_upper_only_verdict_obeys_calibration_cap(tmp_path, monkeypatc
         jd_depth="deep",
         profile=_profile(),
     )
-    pending = list((tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json"))
-    key = pending[0].stem
+    pending = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json")
+    ]
+    key = next(task["key"] for task in pending if task.get("task") == "semantic_resume_match")
 
     assert semantic_match_agent.cmd_complete(
         key, 5.0, "Only a potential transfer from the profile upper bound.", "upper_only"
@@ -125,7 +128,11 @@ def test_direct_verdict_is_not_limited_by_upper_bound(tmp_path, monkeypatch):
         jd_depth="deep",
         profile=_profile(),
     )
-    key = next((tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json")).stem
+    pending = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json")
+    ]
+    key = next(task["key"] for task in pending if task.get("task") == "semantic_resume_match")
     semantic_match_agent.cmd_complete(key, 5.0, "Directly supported by the facts anchor.", "direct")
     rescored = score_job(
         title="Operations Analyst",
@@ -136,3 +143,49 @@ def test_direct_verdict_is_not_limited_by_upper_bound(tmp_path, monkeypatch):
         profile=_profile(),
     )
     assert "[direct]" in rescored.semantic_note
+
+
+def test_position_profile_task_returns_lane_and_company_brief(tmp_path, monkeypatch):
+    _write_semantic_workspace(tmp_path)
+    monkeypatch.setenv("JOBSEARCH_ROOT", str(tmp_path))
+    profile = _profile()
+
+    score_job(
+        title="Operations Analyst",
+        company="Acme Pay",
+        teaser="A fintech providing cross-border payment infrastructure.",
+        track_hint="A",
+        jd_depth="deep",
+        jd_url="https://example.com/jobs/acme-1",
+        jd_full="A fintech providing cross-border payment infrastructure. " * 20,
+        profile=profile,
+    )
+    tasks = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json")
+    ]
+    position = next(task for task in tasks if task.get("task") == "position_profile")
+    assert position["jd_cache"]["cache_key"]
+    assert position["jd_cache"]["chars"] > 100
+
+    assert semantic_match_agent.cmd_complete(
+        position["key"],
+        0.0,
+        "公司业务性质与岗位范围共同决定分类",
+        "upper_only",
+        lane="A",
+        company_brief="Acme Pay 是提供跨境支付基础设施的金融科技公司",
+    ) == 0
+
+    rescored = score_job(
+        title="Operations Analyst",
+        company="Acme Pay",
+        teaser="A fintech providing cross-border payment infrastructure.",
+        track_hint="A",
+        jd_depth="deep",
+        jd_url="https://example.com/jobs/acme-1",
+        jd_full="A fintech providing cross-border payment infrastructure. " * 20,
+        profile=profile,
+    )
+    assert rescored.resume_ver == "A"
+    assert rescored.company_brief_override.startswith("Acme Pay")

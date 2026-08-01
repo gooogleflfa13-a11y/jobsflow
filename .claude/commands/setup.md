@@ -25,7 +25,7 @@ python3 setup.py --resume-folder <用户给的路径>
 - 读取简历并询问目标岗位、地点、薪资、工作时间等限制；
 - 询问简历匹配画像上沿幅度：低（保守）、中（平衡）或高（扩展）；
 - 生成私有 `config.personal.json`、`queries.json`、基础
-  `tracker_schema.json` 与空 tracker；
+  `tracker_schema.json` 与空 tracker；方向默认为 A-F，模型可在有依据时提出可选 G 能力线；
 - 生成 `00_Profile/setup_design_request.json`。该文件只包含配置所需的
   意向与简历证据关键词，不把完整简历写回产品配置。
 

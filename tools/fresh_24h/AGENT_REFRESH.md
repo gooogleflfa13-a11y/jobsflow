@@ -31,13 +31,15 @@ runs must not advance the cursor. Use `--no-record` for previews and debugging.
 1. Scan titles and teasers using configured queries.
 2. Score pass 1 with the private scoring profile.
 3. Only rows meeting the default 3.3 gate continue.
-4. Retrieve the JD cache/structured detail; use Playwright only as a bounded
-   fallback.
+4. Check `02_Tracker/jds/cache/<sha256(url)[:16]>.json` first. A valid cache hit
+   is the only JD input and makes zero network requests. If absent, retrieve
+   structured detail; use Playwright only as a bounded fallback.
 5. Score pass 2 and record the actual JD depth.
-6. For deep rows, process pending semantic resume-match tasks with
-   `semantic_match_agent.py`; label each verdict as direct, transferable,
-   upper_only or none. The profile calibration caps transferable/upper-only
-   scores deterministically.
+6. For deep rows, process pending `position_profile` and
+   `semantic_resume_match` tasks with `semantic_match_agent.py`. The former
+   returns lane + company brief; the latter labels each verdict as direct,
+   transferable, upper_only or none. Both tasks consume the cached JD, and the
+   profile calibration caps transferable/upper-only scores deterministically.
 7. Write local/Google tracker rows only when requested.
 8. Never create application materials during scan.
 
@@ -50,8 +52,9 @@ ask for pasted text instead of fabricating requirements.
 refresh and recent history. New rows use `本轮新增=是`, a batch ID and timestamp;
 older rows are demoted and lose new-batch styling.
 
-IDs use `{A-F direction}{0-3 tier}-{sequence}`. A-F meanings come from private
-setup, never from a built-in profession. Continue the maximum existing prefix;
+IDs use `{A-F direction}{0-3 tier}-{sequence}` (an optional G capability lane is
+allowed when private setup defines it). A-F meanings come from private setup,
+never from a built-in profession. Continue the maximum existing prefix;
 do not invent placeholder ranges.
 
 ## Required agent behavior

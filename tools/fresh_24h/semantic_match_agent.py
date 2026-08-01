@@ -82,6 +82,14 @@ def cmd_show(key: str) -> int:
     print(f"== Semantic match task: {t.get('title')} @ {t.get('company')}")
     print(f"   lane: {t.get('letter')} ({t.get('lane_label')})")
     print(f"   key:  {t.get('key')}")
+    print(f"   task: {t.get('task', 'semantic_resume_match')}")
+    cache = t.get("jd_cache") if isinstance(t.get("jd_cache"), dict) else {}
+    if cache:
+        print(
+            f"   JD cache: {cache.get('cache_key') or '—'} "
+            f"({cache.get('chars') or 0} chars, source={cache.get('source') or '—'}, "
+            f"mode={cache.get('mode') or '—'})"
+        )
     print()
     print("== 求职意向画像 ==")
     print(t.get("profile", ""))
@@ -111,13 +119,14 @@ def cmd_complete(
     note: str,
     basis: str,
     lane: str | None = None,
+    company_brief: str | None = None,
 ) -> int:
     t = _load(key)
     task = str(t.get("task") or "semantic_resume_match")
-    if task == "lane_classify":
-        # Lane-classification tasks do not carry a resume score.
+    if task in {"lane_classify", "position_profile"}:
+        # Position-profile tasks carry lane + optional company brief, no resume score.
         if lane is None:
-            print("ERROR: lane_classify task needs --lane A-G", file=sys.stderr)
+            print(f"ERROR: {task} task needs --lane A-G", file=sys.stderr)
             return 2
         lane = lane.strip().upper()
         if lane not in "ABCDEFG":
@@ -126,7 +135,7 @@ def cmd_complete(
         done = done_dir()
         done.mkdir(parents=True, exist_ok=True)
         verdict = {
-            "task": "lane_classify",
+            "task": task,
             "key": key,
             "title": t.get("title"),
             "company": t.get("company"),
@@ -134,9 +143,12 @@ def cmd_complete(
             "lane_label": t.get("lane_labels", {}).get(lane, lane),
             "note": note,
         }
+        if task == "position_profile" and company_brief:
+            verdict["company_brief"] = company_brief
         atomic_write_json(done / f"{key}.json", verdict)
         (pending_dir() / f"{key}.json").unlink(missing_ok=True)
-        print(f"completed {key}: lane={verdict['letter']} ({verdict['lane_label']})")
+        extra = f" company_brief={verdict.get('company_brief', '')[:30]}..." if verdict.get("company_brief") else ""
+        print(f"completed {key}: lane={verdict['letter']} ({verdict['lane_label']}){extra}")
         print("Re-run scoring to pick up the lane verdict.")
         return 0
     if not 1.0 <= score <= 5.0:
@@ -171,7 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     comp = sub.add_parser("complete", help="write a verdict for a pending task")
     comp.add_argument("key")
     comp.add_argument("--score", type=float, required=False)
-    comp.add_argument("--lane", default=None, help="for lane_classify tasks: A-G")
+    comp.add_argument("--lane", default=None, help="for lane_classify/position_profile tasks: A-G")
+    comp.add_argument("--company-brief", default=None, help="for position_profile tasks: one-line company intro")
     comp.add_argument("--note", default="")
     comp.add_argument(
         "--basis",
@@ -186,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "show":
         return cmd_show(args.key)
     if args.cmd == "complete":
-        return cmd_complete(args.key, args.score or 0.0, args.note, args.basis, args.lane)
+        return cmd_complete(args.key, args.score or 0.0, args.note, args.basis, args.lane, args.company_brief)
     return 2
 
 

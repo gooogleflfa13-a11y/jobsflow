@@ -42,6 +42,7 @@ class ScoreResult:
     brief: str = ""  # 中文简述
     cap_notes: str = ""  # caps triggered, semicolon-joined
     semantic_note: str = ""  # LLM semantic-resume-match note / fallback flag
+    company_brief_override: str = ""  # agent-generated 公司简介 (position-profile task)
 
 
 _PROFILE_NOTICES: set[str] = set()
@@ -284,6 +285,9 @@ def _semantic_resume_match(
     jd_text: str,
     letter: str,
     repo: Path | None = None,
+    jd_full: str | None = None,
+    jd_url: str = "",
+    jd_cache_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Agent-in-the-loop semantic resume-match (deep-JD pass only).
 
@@ -300,6 +304,13 @@ def _semantic_resume_match(
         request has been created for the agent to fill in).
     """
     jobsearch_root = _jobsearch_root(repo)
+    jd_payload = jd_full or jd_text or ""
+    cache_meta = dict(jd_cache_meta or {})
+    cache_meta.setdefault("url", jd_url)
+    cache_meta.setdefault("chars", len(jd_payload))
+    if jd_url:
+        cache_meta.setdefault("cache_key", hashlib.sha256(jd_url.encode("utf-8")).hexdigest()[:16])
+    cache_meta.setdefault("source", "deep_enrich")
     base_path = jobsearch_root / "00_Profile" / "bases_runtime"
     cap = {}
     try:
@@ -389,7 +400,10 @@ def _semantic_resume_match(
                 "upper_only_score_cap": upper_cap,
                 "transfer_score_cap": transfer_cap,
             },
-            "jd_snippet": jd_text[:6000],
+            # This is the text already fetched by deep_enrich_hit.  It is a
+            # bounded payload for weaker models, never a second portal fetch.
+            "jd_snippet": jd_payload[:12000],
+            "jd_cache": cache_meta,
             "instruction": (
                 "用你的语义理解，判断上方「求职意向画像」对 JD 核心职责的支持度。"
                 "先把依据标成 direct（事实基线直接支持）、transferable（相邻能力可迁移）、"
@@ -411,20 +425,27 @@ def _semantic_task_key(title: str, company: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _semantic_lane_classify(
+def _semantic_position_profile(
     *,
     title: str,
     company: str,
     jd_text: str,
     profile: dict[str, Any],
     repo: Path | None = None,
-) -> str | None:
-    """Agent-in-the-loop lane classification (deep-JD pass only).
+    jd_full: str | None = None,
+    jd_url: str = "",
+    jd_cache_meta: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Agent-in-the-loop position profiling (deep-JD pass only).
 
-    Writes a `lane_classify` pending request containing the JD + all defined
-    lane labels. The executing agent decides which lane (A-G) the job's nature
-    belongs to and writes back a verdict. Returns the agent's chosen letter when
-    a verdict exists, else None (caller falls back to rule-based lane).
+    Combines lane classification + company brief into ONE request so the
+    executing agent judges the position holistically:
+      - what the company actually does (business nature drives the lane),
+      - what the role's scope is (job function), and produces two outputs:
+        letter (A-G lane) + company_brief (one-line company intro for the sheet).
+
+    Returns {"letter", "company_brief", "note"} when a verdict exists, else None
+    (caller falls back to rule-based lane + rule-based company_brief).
     """
     track_mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
     lane_labels = {k: v for k, v in track_mapping.items() if k in "ABCDEFG"}
@@ -442,25 +463,43 @@ def _semantic_lane_classify(
             verdict = json.loads(done_file.read_text(encoding="utf-8"))
             letter = str(verdict.get("letter") or "").strip().upper()
             if letter in "ABCDEFG":
-                return letter
+                return {
+                    "letter": letter,
+                    "company_brief": str(verdict.get("company_brief") or "").strip(),
+                    "note": str(verdict.get("note") or "").strip(),
+                }
         except (OSError, ValueError):
             pass
 
+    jd_payload = jd_full or jd_text or ""
+    cache_meta = dict(jd_cache_meta or {})
+    cache_meta.setdefault("url", jd_url)
+    cache_meta.setdefault("chars", len(jd_payload))
+    if jd_url:
+        cache_meta.setdefault("cache_key", hashlib.sha256(jd_url.encode("utf-8")).hexdigest()[:16])
+    cache_meta.setdefault("source", "deep_enrich")
     try:
         pending_dir.mkdir(parents=True, exist_ok=True)
         labels_txt = "\n".join(f"  {k}: {v}" for k, v in lane_labels.items())
         pending = {
-            "task": "lane_classify",
+            "task": "position_profile",
             "key": key,
             "title": title,
             "company": company,
             "lane_labels": lane_labels,
-            "jd_snippet": jd_text[:6000],
+            "jd_snippet": jd_payload[:12000],
+            "jd_cache": cache_meta,
             "instruction": (
-                "判断上方 JD 的职位本质属于哪个求职画像类别。可选类别：\n"
+                "对上方职位做定性分析。分两步：\n"
+                "1) 先判断公司性质：根据公司名称（+JD 里的公司背景）判断这家公司的主营业务/行业/业务本质"
+                "（例如：加密交易所、传统银行、国际律所、SaaS 公司、投资机构等）。\n"
+                "2) 再判断职位类型：结合职位名称与 JD 工作范围，判断其本质属于哪个求职画像类别。\n"
+                "可选类别：\n"
                 + labels_txt
-                + "\n只输出最匹配的一个字母（A-G）。若职位本质偏向创新/科技/加密/数字资产业务则选 G；"
-                "偏向合规/AML/风险则选 C；以此类推。写入 letter(单个字母) 和 note(一句话中文理由)。"
+                + "\n规则：公司业务本质最具决定性（如加密/数字资产/Web3 业务优先 G，传统金融机构合规优先 C）；"
+                "其次是职位工作范围（AML/合规/风险→C，诉讼→A，商事/合同→B 等）。\n"
+                "输出 JSON：letter(单个字母 A-G)、company_brief(一句话中文公司简介，含公司主营/行业，30-60字)、"
+                "note(一句话中文理由，说明公司性质+职位类型如何决定该分类)。"
             ),
             "status": "pending",
         }
@@ -508,6 +547,9 @@ def score_job(
     context: str | None = None,
     profile: dict[str, Any] | None = None,
     repo: Path | None = None,
+    jd_url: str = "",
+    jd_full: str | None = None,
+    jd_cache_meta: dict[str, Any] | None = None,
 ) -> ScoreResult:
     """Cross-industry scorer driven by setup output, never a built-in biography."""
     if context is not None and (jd_depth == "teaser" or not jd_depth):
@@ -624,16 +666,21 @@ def score_job(
                         break
 
     letter = rule_letter
+    company_brief_override = ""
     if _is_deep_depth(jd_depth):
-        agent_lane = _semantic_lane_classify(
+        pos = _semantic_position_profile(
             title=title,
             company=company,
             jd_text=teaser or "",
             profile=profile,
             repo=repo,
+            jd_full=jd_full,
+            jd_url=jd_url,
+            jd_cache_meta=jd_cache_meta,
         )
-        if agent_lane is not None:
-            letter = agent_lane
+        if pos is not None:
+            letter = pos["letter"]
+            company_brief_override = pos.get("company_brief") or ""
     mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
     track = str(mapping.get(letter) or f"Track {letter}")
 
@@ -649,6 +696,9 @@ def score_job(
             jd_text=teaser or "",
             letter=letter,
             repo=repo,
+            jd_full=jd_full,
+            jd_url=jd_url,
+            jd_cache_meta=jd_cache_meta,
         )
         if sem is not None:
             resume = sem["resume"]
@@ -756,6 +806,7 @@ def score_job(
         brief=brief,
         cap_notes="；".join(cap_notes),
         semantic_note=semantic_note or "",
+        company_brief_override=company_brief_override or "",
     )
 
 
@@ -873,7 +924,7 @@ def build_tracker_row(
         sc.resume_note,
         "未做",
         sc.work_time_risk,
-        company_brief(hit.get("company") or "—", hit.get("teaser") or ""),
+        sc.company_brief_override or company_brief(hit.get("company") or "—", hit.get("teaser") or ""),
         f"{sc.score:.2f}",
         sc.grade,
         sc.reason,
