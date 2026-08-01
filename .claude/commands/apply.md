@@ -18,9 +18,10 @@
 2. 展示 fit、真实缺口、公司/JD 定制重点，并让用户确认是否继续完成材料。
 3. 只有 `application_preflight.ready_for_apply=true` 且 `quality_gate.ready_for_drafting=true` 才生成或更新 CV/CL DOCX；不得覆盖 master，不得编造雇主、职责、指标、资格或候选人兴趣。
 4. Cover Letter 只使用有 `source_url` 的公司事实，并将其连接到用户已经表达或履历能够支持的兴趣。
-5. 内容定稿后各执行一次 LibreOffice headless PDF 转换；CV 与 Cover Letter 均须 1 页。相同 DOCX 内容直接复用 PDF 哈希缓存。
-6. 验证 PDF 页数、可读文字层、联系方式、JD 关键词覆盖与公司事实来源。失败时修正文案/DOCX 后重建；不得靠缩放隐藏内容。
-7. 向用户列出最终文件、研究来源、关键差异化、事实缺口和验证结果。未获得用户明确授权，不自动向网站提交。
+5. 发送前核对 `publisher_type`、`publisher_name`、`employer_name`：猎头/招聘机构只作为内部来源记录，不能出现在外发文件名或 Cover Letter 中；客户未披露时不猜测用人公司。
+6. 使用 `tailor_plan.json.material_filenames` 的外发命名建议，再从 master 复制并编辑 DOCX。内容定稿后各执行一次 LibreOffice headless PDF 转换；CV 与 Cover Letter 均须 1 页。相同 DOCX 内容直接复用 PDF 哈希缓存。
+7. 验证 PDF 页数、可读文字层、联系方式、JD 关键词覆盖与公司事实来源。失败时修正文案/DOCX 后重建；不得靠缩放隐藏内容。
+8. 向用户列出最终文件、研究来源、关键差异化、事实缺口和验证结果。未获得用户明确授权，不自动向网站提交。
 
 ## 已确认事实回写
 

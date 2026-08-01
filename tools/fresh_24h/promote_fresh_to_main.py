@@ -96,7 +96,7 @@ def to_main_row(d: dict) -> dict:
             raw = d.get(h)
             out[h] = (raw or "").strip() if isinstance(raw, str) else ("" if raw is None else str(raw).strip())
     jid = out.get("岗位编号") or ""
-    if not out.get("层级") and re.match(r"^[A-F][012]-", jid):
+    if not out.get("层级") and re.match(r"^[A-G][012]-", jid):
         out["层级"] = {"0": "核心", "1": "一级", "2": "二级"}.get(jid[1], "")
     return out
 
@@ -122,7 +122,7 @@ def tier_of(d: dict) -> str:
     if t in TIER_SHEETS:
         return t
     jid = (d.get("岗位编号") or "").strip()
-    m = re.match(r"^[A-F]([012])-", jid)
+    m = re.match(r"^[A-G]([012])-", jid)
     if m:
         return {"0": "核心", "1": "一级", "2": "二级"}[m.group(1)]
     return ""

@@ -139,6 +139,16 @@ python3 -m tools.job_materials pipeline --package "..." --lane A
   invent duties, outcomes, tools, qualifications or motivation.
 - The cover letter should express specific, evidence-based interest in the company
   or industry rather than generic praise.
+- Identify whether the listing is posted directly by the hiring company or via a
+  recruiter / staffing agency / consultancy. If the poster is a recruiter or
+  agency, do NOT use the recruiter's name in the output file name or in the
+  cover letter; address the letter to the end employer (the actual company), not
+  the recruiter.
+- Persist this boundary as `publisher_type`, `publisher_name` and
+  `employer_name`. A disclosed client may be used as the outbound target; an
+  undisclosed client remains unnamed and must not be guessed. Use the generated
+  `material_filenames` values for external CV/CL filenames while retaining the
+  publisher only inside the private package for traceability.
 - Deterministic preflight, evidence-map and quality-gate outputs are mandatory so
   lower-capability models cannot silently skip requirements such as salary,
   authorization, language, location or schedule.

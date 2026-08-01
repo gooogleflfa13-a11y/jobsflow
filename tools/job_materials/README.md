@@ -70,6 +70,25 @@ for either a capable or lower-capability model. It requires:
 An interest angle is not a candidate fact. The model must not state admiration or
 motivation until the user confirms it.
 
+### Publisher versus hiring employer
+
+The posting's displayed company is not automatically the hiring employer. The
+pipeline records a conservative classification in `publisher_type`:
+`employer`, `recruiter`, or `unknown`, with separate `publisher_name` and
+`employer_name` fields.
+
+- If a recruiter discloses its client, use the verified client in outbound CV/
+  Cover Letter filenames and text.
+- If the client is undisclosed, omit the agency name and do not guess an employer;
+  use role/industry context only.
+- If the relationship cannot be verified, the quality gate blocks final drafting
+  until the classification is resolved.
+
+The internal package may retain the publisher for source traceability. The
+outbound-safe names are written to `tailor_plan.json.material_filenames` and
+listed in `tailor_plan.md` / `materials_status.md`; an agency name is never used
+as the apparent employer.
+
 Save completed research:
 
 ```bash

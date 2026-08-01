@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Job ID allocation for fresh scans — aligns with 简历审查简报 rules.
 
-Format: {A-F}{0-2}-{NNN}
-  letter  = resume version (A litigation … F general)
+Format: {A-G}{0-2}-{NNN}
+  letter  = resume version / capability track (A litigation … F general, G 跨行业/创新/科技)
   digit   = 0 核心 (B/C, score≥3.5) | 1 一级 (D, score≥3.3) | 2 二级 (D<3.3 or E)
   NNN     = continues from max existing ID in Google Sheet / tracker for that prefix
 
@@ -29,7 +29,7 @@ def tier_from_score(score: float, grade: str = "") -> tuple[int, str]:
 
 
 def parse_id(jid: str) -> tuple[str, int, int] | None:
-    m = re.match(r"^([A-F])([0-3])-(\d+)$", (jid or "").strip())
+    m = re.match(r"^([A-G])([0-3])-(\d+)$", (jid or "").strip())
     if not m:
         return None
     return m.group(1), int(m.group(2)), int(m.group(3))
@@ -62,7 +62,7 @@ def allocate_ids(
         grade = str(row.get(grade_key) or "")
         digit, tier_name = tier_from_score(score, grade)
         letter = (str(row.get(letter_key) or "F").strip().upper()[:1] or "F")
-        if letter not in "ABCDEF":
+        if letter not in "ABCDEFG":
             letter = "F"
         pref = f"{letter}{digit}"
         counters[pref] = counters.get(pref, 0) + 1

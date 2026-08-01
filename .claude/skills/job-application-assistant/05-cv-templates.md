@@ -26,7 +26,8 @@ generated PDFs belong in `JobSearch_2026/`.
 4. Reorder or lightly rephrase only fact-checked bullets.
 5. Never invent an achievement, metric, tool, qualification, or industry
    interest.
-6. Verify one page, readable text extraction, correct contact details, and a
-   clean send filename.
+6. Verify one page, readable text extraction, correct contact details, and the
+   `tailor_plan.json.material_filenames` send name. Use only a verified hiring
+   employer in that name; never expose a recruiter or staffing agency.
 
 See `docs/system_rules.md` and `.claude/commands/materials.md`.

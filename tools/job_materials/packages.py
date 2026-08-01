@@ -75,17 +75,35 @@ def _existing_package(root: Path, job_id: str) -> Path | None:
 
 def _lane_for_row(root: Path, row: dict[str, str]) -> str:
     raw = (row.get("简历版本") or row.get("lane") or "").strip().upper()
-    match = re.match(r"([A-F])", raw)
+    match = re.match(r"([A-G])", raw)
     if match:
         return match.group(1)
     track = (row.get("赛道") or "").strip().upper()
-    match = re.match(r"([A-F])", track)
+    match = re.match(r"([A-G])", track)
     return match.group(1) if match else "F"
 
 
 def _snapshot(job_id: str, row: dict[str, str], *, tracker_path: Path, lane: str) -> str:
     role = (row.get("职位") or row.get("title") or "").strip() or "未命名职位"
     company = (row.get("公司") or row.get("company") or "").strip() or "未披露公司"
+    publisher = (
+        row.get("发布者")
+        or row.get("publisher")
+        or row.get("发布者名称")
+        or row.get("publisher_name")
+        or company
+    ).strip() or company
+    publisher_type = (
+        row.get("发布者类型")
+        or row.get("publisher_type")
+        or "unknown"
+    ).strip().lower() or "unknown"
+    employer = (
+        row.get("用人公司")
+        or row.get("employer")
+        or row.get("employer_name")
+        or ""
+    ).strip()
     tier = (row.get("层级") or row.get("tier") or "待审").strip() or "待审"
     source = (row.get("来源") or row.get("source") or "").strip()
     url = (row.get("链接") or row.get("url") or "").strip()
@@ -95,6 +113,9 @@ def _snapshot(job_id: str, row: dict[str, str], *, tracker_path: Path, lane: str
         "",
         f"Role: {role}",
         f"Company: {company}",
+        f"Publisher: {publisher}",
+        f"Publisher Type: {publisher_type}",
+        f"Employer: {employer or '—'}",
         f"Lane: {lane}",
         f"Tier: {tier}",
         f"Source: {source or 'unknown'}",
@@ -134,12 +155,33 @@ def create_package_from_tracker(root: Path, job_id: str) -> Path:
     )
     package = masters_dir(root) / lane_folder / tier / f"{job_id}_未投_{company}"
     package.mkdir(parents=True, exist_ok=True)
+    publisher = (
+        row.get("发布者")
+        or row.get("publisher")
+        or row.get("发布者名称")
+        or row.get("publisher_name")
+        or row.get("公司")
+        or row.get("company")
+        or "未披露公司"
+    ).strip() or "未披露公司"
+    publisher_type = (
+        row.get("发布者类型") or row.get("publisher_type") or "unknown"
+    ).strip().lower() or "unknown"
+    employer = (
+        row.get("用人公司")
+        or row.get("employer")
+        or row.get("employer_name")
+        or ""
+    ).strip()
     atomic_write_text(package / "job_snapshot.md", _snapshot(job_id, row, tracker_path=tracker_path, lane=lane))
     atomic_write_json(
         package / "tracker_row.json",
         {
             "job_id": job_id,
             "lane": lane,
+            "publisher_name": publisher,
+            "publisher_type": publisher_type,
+            "employer_name": employer,
             "tracker_path": str(tracker_path),
             "row": row,
         },

@@ -151,6 +151,25 @@ Example: for a JD asking for experience developing, implementing and monitoring 
 operational program, JobsFlow separates process design, execution and monitoring;
 it prioritizes matching evidence and asks about gaps instead of inventing metrics.
 
+### Separate the posting publisher from the hiring employer
+
+The company shown on a job page may be a recruiter or staffing agency rather than
+the organisation hiring for the role. JobsFlow classifies the relationship as
+`employer`, `recruiter`, or `unknown`, and stores `publisher_name` separately from
+`employer_name`:
+
+- when a recruiter discloses its client, outbound CV/Cover Letter text and
+  filenames use the verified client only;
+- when the client is undisclosed, the agency name is omitted and the letter uses
+  role/industry context without guessing an employer;
+- when the relationship is unresolved, the quality gate flags it instead of
+  treating the displayed company as the employer.
+
+The internal package keeps the publisher for source traceability. Use the
+`tailor_plan.json.material_filenames` suggestions for files that will actually be
+sent, so a posting from Michael Page (or another agency) never makes the agency
+look like the hiring company.
+
 ### LLMO details: make real evidence easier to read correctly
 
 JobsFlow treats LLMO as an auditable material contract—not writing a candidate into

@@ -60,11 +60,28 @@ python3 -m tools.job_materials preflight answer --job-id C0-005 \
 - 一个可以在 Cover Letter 中具体表达兴趣的角度
 - 尚未核实的事项
 
+### 发布者与用人公司必须分开
+
+职位页显示的“公司”可能是用人公司，也可能是猎头/招聘机构。材料管线会把
+`publisher_type` 归类为 `employer`、`recruiter` 或 `unknown`，并单独保存
+`publisher_name` 与 `employer_name`：
+
+- 招聘机构已披露客户：外发文件名和 Cover Letter 只使用已核实的客户公司；
+- 客户未披露：文件名不带招聘机构名称，Cover Letter 只写岗位/行业语境，不猜公司；
+- 无法确认：质量门槛会标记 `publisher_classification`，不得把职位页显示名直接当雇主。
+
+材料包内部可以保留发布者名称，方便追溯来源；`tailor_plan.json` 的
+`material_filenames` 是对外发送时应采用的 CV/求职信文件名，绝不把猎头机构名
+暴露给最终用人方。
+
 将结果按以下 JSON 写入临时文件，再存入材料包：
 
 ```json
 {
   "company": "Example",
+  "publisher_type": "employer",
+  "publisher_name": "Example",
+  "employer_name": "Example",
   "nature": "Private fintech company",
   "business": "Cross-border payment services for SMEs",
   "role_priorities": ["Develop and monitor the compliance programme"],

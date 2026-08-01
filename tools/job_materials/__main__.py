@@ -64,6 +64,7 @@ from tools.job_materials.jd_store import (  # noqa: E402
 from tools.job_materials.llmo import audit_plain_text  # noqa: E402
 from tools.job_materials.paths import LANES, jobsearch_root  # noqa: E402
 from tools.job_materials.packages import resolve_package  # noqa: E402
+from tools.job_materials.publisher import snapshot_context  # noqa: E402
 from tools.job_materials.tailor import (  # noqa: E402
     build_tailored_payload,
     package_quality_exit_code,
@@ -290,6 +291,7 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         print(f"not a package dir: {package}", file=sys.stderr)
         return 2
     title, company = _parse_title_company(package)
+    publisher_context = snapshot_context(package)
     lane = (args.lane or "").upper()
     if not lane:
         lane = pick_lane_from_text(title, read_jd(package, root)[:500])
@@ -333,9 +335,18 @@ def cmd_tailor(args: argparse.Namespace) -> int:
     if not (research.get("quality") or {}).get("ready_for_tailoring"):
         request_path = write_company_research_request(
             package,
-            company=company or "",
+            company=research.get("employer_name") or company or "",
             role=title,
             jd_text=jd,
+            publisher_name=research.get("publisher_name")
+            or publisher_context.get("publisher_name")
+            or company
+            or "",
+            source_url=research.get("source_url")
+            or publisher_context.get("source_url")
+            or "",
+            publisher_type=research.get("publisher_type") or "unknown",
+            employer_name=research.get("employer_name") or "",
         )
         print(f"Wrote {request_path} -> complete sourced company quick research")
     payload = build_tailored_payload(
@@ -345,6 +356,7 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         jd_text=jd,
         company_research=research,
         use_llm=bool(args.llm),
+        publisher_context=publisher_context,
     )
     payload["application_preflight"] = {
         "ready_for_apply": preflight["ready_for_apply"],

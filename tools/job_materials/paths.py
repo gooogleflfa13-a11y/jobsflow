@@ -63,7 +63,7 @@ LANES: dict[str, dict[str, str]] = {
 
 
 def load_lanes(root: Path | None = None) -> dict[str, dict[str, str]]:
-    """Resolve A–F metadata from private setup and existing private folders."""
+    """Resolve A–F role metadata plus the separate G capability lane."""
     root = root or jobsearch_root()
     lanes = {letter: dict(meta) for letter, meta in LANES.items()}
     path = profile_dir(root) / "queries.json"
@@ -93,6 +93,23 @@ def load_lanes(root: Path | None = None) -> dict[str, dict[str, str]]:
         ]
         if letter in lanes and patterns:
             lanes[letter]["emphasis"] = ",".join(patterns)
+
+    # G is maintained as a separate capability profile rather than an A–F
+    # fact-checked role base.  Expose its folder to package routing without
+    # adding it to LANES, so `base sync` continues to operate on A–F only.
+    g_path = profile_dir(root) / "bases_runtime" / "G.json"
+    try:
+        import json
+
+        g_value = json.loads(g_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        g_value = {}
+    if isinstance(g_value, dict) and g_value.get("folder"):
+        lanes["G"] = {
+            "folder": str(g_value.get("folder") or "G_innovation_tech"),
+            "label": str(g_value.get("label") or "跨行业/创新/科技"),
+            "emphasis": ",".join(str(x) for x in g_value.get("emphasis") or []),
+        }
 
     master_root = masters_dir(root)
     if master_root.is_dir():

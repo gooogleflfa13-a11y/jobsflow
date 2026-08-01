@@ -516,14 +516,14 @@ def append_to_tracker(
     # allocate per track letter counters
     counters: dict[str, int] = {}
     for i in ids:
-        m = re.match(r"^([A-F])0-(\d+)$", i or "")
+        m = re.match(r"^([A-G])0-(\d+)$", i or "")
         if m:
             letter, num = m.group(1), int(m.group(2))
             counters[letter] = max(counters.get(letter, 0), num)
 
     for h in new_hits:
         letter = (h.track_hint or "F")[0].upper()
-        if letter not in "ABCDEF":
+        if letter not in "ABCDEFG":
             letter = "F"
         counters[letter] = counters.get(letter, 0) + 1
         jid = f"{letter}0-{counters[letter]:03d}"
