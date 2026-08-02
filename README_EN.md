@@ -14,11 +14,6 @@ and how to tailor the application without giving up final control.
 - **Reliable with smaller models:** deterministic preflight, evidence mapping, and quality gates prevent silent skips.
 - **Always user-approved:** JobsFlow never auto-submits an application.
 
-```text
-CV + intent → setup → search → quick score → JD deep read
-           → company research → tailored CV/cover letter → your approval
-```
-
 ### Why JobsFlow?
 
 | Generic AI job tool | JobsFlow |
@@ -28,6 +23,52 @@ CV + intent → setup → search → quick score → JD deep read
 | Reuses one resume everywhere | Builds direction-specific bases, then tailors per JD |
 | Silently skips what a weaker model missed | Enforces schemas, gates, source checks and coverage checks |
 | Uses a fixed industry template | Generates industry-aware directions from your CV and intent |
+
+## Quick start
+
+```bash
+git clone https://github.com/gooogleflfa13-a11y/jobsflow.git
+cd jobsflow
+PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v python3)"
+"$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
+"$PYTHON_BIN" -m venv .venv
+source .venv/bin/activate
+python3 -m pip install --require-hashes -r requirements.lock
+python3 setup.py --doctor
+python3 setup.py --resume-folder ~/Documents/my-cv
+python3 setup.py --install-portals
+```
+
+Then use:
+
+```text
+/scan
+/push (or /push --local-only for a CSV-only tracker)
+/materials C0-005 C
+/apply C0-005 C
+```
+
+During `/setup`, the assistant can propose A–F directions (plus an optional G
+capability lane), scoring weights and
+tracker columns based on the user's résumé evidence, stated constraints and
+industry context. The proposal is constrained by a machine-readable schema and
+is written only to the private workspace; invalid output falls back to the
+deterministic cross-industry configuration.
+
+Job intent can evolve safely after setup. Use `/intent add ...` to add a
+direction or `/intent replace ...` to replace the search scope. JobsFlow turns
+the natural-language update into role and industry keywords and shows a preview
+first; only an explicit `/intent confirm` writes the private search
+configuration. The next `/scan` uses the new configuration, while historical
+tracker rows and existing materials remain unchanged. If it is unclear whether
+the user wants to add or replace a direction, the assistant asks first.
+
+`/scan` defaults to the period since the last successful refresh. Use `/scan daily` for 24 hours or `/scan 3` for three hours. A failed portal run does not advance the refresh cursor.
+
+```text
+CV + intent → setup → search → quick score → JD deep read
+           → company research → tailored CV/cover letter → your approval
+```
 
 ### Our LLMO strategy
 
@@ -94,47 +135,6 @@ break or silently claim a deep semantic verdict.
 - PDF conversion also uses a content-hash cache, so unchanged DOCX files are not
   converted again.
 
-## Quick start
-
-```bash
-git clone https://github.com/gooogleflfa13-a11y/jobsflow.git
-cd jobsflow
-PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v python3)"
-"$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
-"$PYTHON_BIN" -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --require-hashes -r requirements.lock
-python3 setup.py --doctor
-python3 setup.py --resume-folder ~/Documents/my-cv
-python3 setup.py --install-portals
-```
-
-Then use:
-
-```text
-/scan
-/push (or /push --local-only for a CSV-only tracker)
-/materials C0-005 C
-/apply C0-005 C
-```
-
-During `/setup`, the assistant can propose A–F directions (plus an optional G
-capability lane), scoring weights and
-tracker columns based on the user's résumé evidence, stated constraints and
-industry context. The proposal is constrained by a machine-readable schema and
-is written only to the private workspace; invalid output falls back to the
-deterministic cross-industry configuration.
-
-Job intent can evolve safely after setup. Use `/intent add ...` to add a
-direction or `/intent replace ...` to replace the search scope. JobsFlow turns
-the natural-language update into role and industry keywords and shows a preview
-first; only an explicit `/intent confirm` writes the private search
-configuration. The next `/scan` uses the new configuration, while historical
-tracker rows and existing materials remain unchanged. If it is unclear whether
-the user wants to add or replace a direction, the assistant asks first.
-
-`/scan` defaults to the period since the last successful refresh. Use `/scan daily` for 24 hours or `/scan 3` for three hours. A failed portal run does not advance the refresh cursor.
-
 ## Materials
 
 Materials use fact-checked direction bases (A–F, with an optional G capability
@@ -185,7 +185,7 @@ This gives models with different capability levels an executable boundary: the m
 reorders and rephrases mapped evidence instead of having to infer the whole JD or
 fill unsupported gaps.
 
-## Sources and privacy
+## Sources
 
 Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automation is a last fallback after structured APIs and cache.
 
@@ -195,10 +195,6 @@ Supported sources are LinkedIn, JobsDB, CTgoodjobs and FreeHire. Browser automat
 | JobsDB | ✓ | Partial | Paste the full JD when preparing materials |
 | CTgoodjobs | ✓ | Partial | Paste the full JD when preparing materials |
 | FreeHire | ✓ | Manual | Additional job source; detail can be queried by posting ID |
-
-The default workflow is local-first. Data leaves the machine only when you explicitly enable Google Sheets, an external LLM, or a portal request. Review each service’s terms and privacy policy. JobsFlow never auto-submits an application.
-Google Sheets is not a job source; it is an optional tracker-sync destination. Local CSV tracking works without it.
-LinkedIn accepts a user-specified location; the current JobsDB and CTgoodjobs integrations target Hong Kong; FreeHire covers multiple markets but its strongest filtering is currently technical roles.
 
 ## Folder + tracker: a portable application workspace
 
@@ -233,7 +229,22 @@ Google Sheets; Sheets is an optional tracker sync, not a CV or cover-letter stor
 
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
 
+## FAQ
+
+**Can I use it outside legal or compliance?** Yes. Setup generates directions and
+tracker headers from your target industry; legal/compliance is not a default.
+
+**Does it work with models with different capability levels?** Yes. Models improve research and
+wording, while deterministic checks enforce the important boundaries.
+
+**Does it upload my CV?** Not by default. Data leaves the machine only when you
+explicitly enable an external LLM, Google Sheets, or a portal request.
+
 ## Privacy, safety and public release
+
+The default workflow is local-first. Data leaves the machine only when you explicitly enable Google Sheets, an external LLM, or a portal request. Review each service’s terms and privacy policy. JobsFlow never auto-submits an application.
+Google Sheets is not a job source; it is an optional tracker-sync destination. Local CSV tracking works without it.
+LinkedIn accepts a user-specified location; the current JobsDB and CTgoodjobs integrations target Hong Kong; FreeHire covers multiple markets but its strongest filtering is currently technical roles.
 
 The public source is the product line. A user's résumé, queries, job descriptions,
 scores, and application tracker belong to the separate private `JobSearch_2026/`
@@ -257,14 +268,3 @@ pytest -q
 ```
 
 See [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md) for release hygiene and history handling.
-
-## FAQ
-
-**Can I use it outside legal or compliance?** Yes. Setup generates directions and
-tracker headers from your target industry; legal/compliance is not a default.
-
-**Does it work with models with different capability levels?** Yes. Models improve research and
-wording, while deterministic checks enforce the important boundaries.
-
-**Does it upload my CV?** Not by default. Data leaves the machine only when you
-explicitly enable an external LLM, Google Sheets, or a portal request.
