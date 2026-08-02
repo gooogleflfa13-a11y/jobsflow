@@ -40,7 +40,7 @@ python3 -m tools.job_materials preflight answer --job-id C0-005 \
   --field expected_salary --value "HKD 28,000–32,000 monthly"
 ```
 
-## 2. 公司快查（必须）
+## 2. 公司快查（优先；无可靠来源时回退到 JD）
 
 搜索并优先读取一手来源：
 
@@ -52,13 +52,17 @@ python3 -m tools.job_materials preflight answer --job-id C0-005 \
 `company_research_request.json`；非旗舰模型必须逐项执行其中的
 `source_priority`、`required_output` 和 `model_contract`，不能凭印象补公司事实。
 
-至少搞清：
+优先搞清：
 
 - 公司性质：律所、上市公司、私人公司、金融机构、创业公司、非营利机构等
 - 主营业务、客户/市场和商业模式
 - JD 反映的 2–4 个岗位关注点
 - 一个可以在 Cover Letter 中具体表达兴趣的角度
 - 尚未核实的事项
+
+如果没有可靠的一手公司信息，不要为了满足模板而猜测公司性质或主营业务。
+只要完整 JD、候选人证据和发布者/用人公司边界已经可用，材料管线可以进入
+`jd_only_or_generic` 回退模式；Cover Letter 只描述 JD、岗位职能或行业语境。
 
 ### 发布者与用人公司必须分开
 
@@ -110,7 +114,10 @@ python3 -m tools.job_materials pipeline --job-id C0-005 --lane C
 
 读取 `tailor_plan.md` 与事实核验通过的 A–F 基础版，只在已有事实内重排和重述：
 
-- 先检查 `quality_gate.ready_for_drafting`；false 时按 `blockers` 补齐输入
+- 先检查 `quality_gate.ready_for_drafting`；false 但
+  `quality_gate.ready_for_generic_drafting=true` 时，可按 `drafting_mode=jd_only_or_generic`
+  使用 JD-only 或通用版 Cover Letter，不得把缺少公司信息误写成公司事实；只有
+  `ready_for_generic_drafting=false` 时才按 `generic_fallback_blockers` 补齐输入
 - 非旗舰模型必须严格按 `low_model_contract.required_order` 执行
 - `evidence_map` 已把每个 JD 能力主题映射到候选人证据，不得自行换成无证据经历
 - `llmo.jd_anchors` 是更细的执行契约：Tier 1/2 要求必须按 `status` 处理；`uncovered` / `prohibited_to_claim` 不得写入外发材料
@@ -128,12 +135,31 @@ python3 -m tools.job_materials pipeline --job-id C0-005 --lane C
 Cover Letter 必须同时包含：
 
 - 为什么是这个岗位：直接对应 JD 的 2–3 个关注点
-- 为什么是这家公司/行业：引用一个已核实的公司事实，并连接到用户真实兴趣或已有经历
 - 为什么是用户：用事实核验过的经历给出证据
 
-避免泛泛的 “I admire your esteemed company”。如果公司调研不足，明确留空或先补查。
+定制版应优先用 `tailor_plan.json.cover_letter_blueprint.role_industry_match` 替换通用版
+原有的 company-interest 槽位，写成一个 1–2 句的小段落，遵循：
 
-非旗舰模型直接按 `cover_letter_blueprint.paragraphs` 的四个槽位写作：opening → company_interest → evidence → close。不得遗漏槽位，不得在槽位之外增加新事实。
+`岗位需求 / 行业或业务语境 → 候选人真实证据 → 可提供的价值`
+
+要求：
+
+- 必须读取当前完整 JD，并自然使用 1–2 个重要且真实的 JD 词语或职责；
+- 有可靠来源的公司信息时，可以说明公司业务或行业与候选人经历的关系；
+- 没有可靠公司信息时，只能依据 JD、岗位职能和已提供材料，不得猜测公司业务；
+- A–F 以岗位职能和业务场景为主；G 只有在 JD 和用户证据都支持时，才补充 AI、金融科技、数字资产或其他科技行业兴趣；
+- 不得使用 “I admire your esteemed company” 或“贵公司令人向往”等空泛套话；
+- 不得重复简历中的完整经历，也不得出现猎头/招聘机构名称。
+
+这个小段落是可选增强，不是 `/apply` 的阻断条件。若 `mode=jd_only`，使用 JD 语境；若
+`mode=omit`，保留通用版 Cover Letter 或只做轻量岗位修改。
+
+篇幅必须与通用版相当：它替换原有槽位而不是追加第五段，最多两句话，超出一页时先
+删减该段或删除它，不得缩小字体、压缩边距或扩展成长篇公司介绍。
+
+非旗舰模型直接按 `cover_letter_blueprint.paragraphs` 的四个槽位写作：opening →
+role_industry_match → evidence → close。必须读取该槽位的 `mode`、`jd_keywords`、
+`evidence_ids` 和 `length_budget`；不得遗漏槽位，也不得在槽位之外增加新事实。
 申请邮件使用 `application_email_blueprint`，只保留同一证据图中最强的 2–3 条事实；纯文本、无内部评分或事实库备注。
 
 ## 5. 输出与验证

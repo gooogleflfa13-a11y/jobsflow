@@ -265,9 +265,35 @@ def build_quality_gate(
         blockers.append("jd_capability_focus")
     if focus and not any(evidence_map.values()):
         blockers.append("candidate_evidence")
+    # Company context is preferred for the highest-quality version, but it is
+    # not a prerequisite for a safe JD-only/generic Cover Letter fallback. The
+    # fallback still requires a full JD, fact-checked evidence and a resolved
+    # publisher/employer boundary.
+    generic_fallback_blockers = [
+        item
+        for item in blockers
+        if item
+        not in {
+            "company_nature",
+            "company_business",
+            "verified_company_source",
+            "company_role_priorities",
+        }
+    ]
+    ready_for_generic_drafting = not generic_fallback_blockers
+    drafting_mode = (
+        "company_tailored"
+        if not blockers
+        else "jd_only_or_generic"
+        if ready_for_generic_drafting
+        else "blocked"
+    )
     return {
         "ready_for_drafting": not blockers,
+        "ready_for_generic_drafting": ready_for_generic_drafting,
+        "drafting_mode": drafting_mode,
         "blockers": blockers,
+        "generic_fallback_blockers": generic_fallback_blockers,
         "checks": {
             "full_jd": not shallow,
             "fact_checked_base": base_factcheck == "passed",
@@ -279,7 +305,141 @@ def build_quality_gate(
                 publisher_classification.get("publisher_type") or "unknown"
             ) != "unknown",
             "jd_evidence_mapping": bool(focus and any(evidence_map.values())),
+            "generic_fallback_ready": ready_for_generic_drafting,
         },
+    }
+
+
+def build_role_industry_match_contract(
+    *,
+    jd: str,
+    jd_focus: list[str],
+    jd_anchors: list[dict[str, Any]],
+    jd_keywords: list[str],
+    role_priorities: list[str],
+    company_fact: dict[str, Any],
+    company_nature: str,
+    company_business: str,
+    application_target: str,
+    evidence_map_detail: dict[str, dict[str, Any]],
+    base_id: str | None,
+    interest_angles: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build the compact, optional role/industry-match slot for a Cover Letter.
+
+    The slot replaces the generic template's company-interest position instead
+    of appending a new paragraph.  It is a drafting contract, not a hard gate:
+    when evidence or reliable company context is missing, the caller may use a
+    JD-only or generic Cover Letter and continue to /apply.
+    """
+    usable_statuses = {"covered", "partial"}
+    evidence_ids: list[str] = []
+    for capability in jd_focus:
+        detail = evidence_map_detail.get(capability) or {}
+        if detail.get("status") not in usable_statuses:
+            continue
+        for evidence_id in detail.get("evidence_ids") or []:
+            value = str(evidence_id).strip()
+            if value and value not in evidence_ids:
+                evidence_ids.append(value)
+            if len(evidence_ids) >= 2:
+                break
+        if len(evidence_ids) >= 2:
+            break
+
+    usable_anchors: list[dict[str, Any]] = []
+    for anchor in jd_anchors:
+        if not isinstance(anchor, dict):
+            continue
+        if anchor.get("status") not in usable_statuses:
+            continue
+        usable_anchors.append(anchor)
+        if len(usable_anchors) >= 2:
+            break
+
+    source_url = str(company_fact.get("source_url") or "").strip()
+    has_verified_company_context = bool(
+        application_target.strip()
+        and source_url
+        and (str(company_fact.get("claim") or "").strip() or company_business.strip())
+    )
+    lane = str(base_id or "").strip().upper()
+    technology_terms = {
+        "ai", "artificial", "automation", "technology", "digital", "fintech",
+        "crypto", "blockchain", "web3", "digital asset", "software", "data",
+    }
+    jd_lower = jd.casefold()
+    technology_jd = any(term in jd_lower for term in technology_terms)
+    confirmed_interest = [str(item).strip() for item in (interest_angles or []) if str(item).strip()]
+    allow_industry_interest = bool(lane == "G" and technology_jd and confirmed_interest)
+
+    if evidence_ids and has_verified_company_context:
+        mode = "company_verified"
+        context_basis = "verified_company_fact_and_jd"
+    elif evidence_ids and (jd_focus or jd_keywords):
+        mode = "jd_only"
+        context_basis = "jd_and_candidate_evidence"
+    else:
+        mode = "omit"
+        context_basis = "insufficient_verified_match_evidence"
+
+    fallback_mode = "jd_only" if evidence_ids and (jd_focus or jd_keywords) else "generic_role"
+    clean_keywords: list[str] = []
+    for raw_keyword in jd_keywords:
+        keyword = re.sub(r"^[^\w+#./-]+|[^\w+#/-]+$", "", str(raw_keyword), flags=re.UNICODE)
+        if keyword and keyword not in clean_keywords:
+            clean_keywords.append(keyword)
+    return {
+        "mode": mode,
+        "context_basis": context_basis,
+        "insert_mode": "replace_existing_company_interest",
+        "blocks_apply": False,
+        "paragraph_count": 1,
+        "paragraph_policy": "single_compact_paragraph",
+        "sentence_limit": {"min": 1, "max": 2},
+        "length_budget": {
+            "reference": "generic_cover_letter_master",
+            "rule": "same_or_shorter_than_replaced_company_interest_slot",
+            "max_pages": 1,
+            "overflow_action": "trim_then_omit; never shrink font or margins",
+        },
+        "sentence_roles": [
+            "State the role, industry, business direction or core JD responsibility and naturally use one or two real JD terms.",
+            "Connect that requirement to the selected fact-checked evidence and state the value the candidate can provide.",
+        ],
+        "focus_capabilities": list(jd_focus[:3]),
+        "jd_keywords": clean_keywords[:4],
+        "jd_anchor_ids": [str(anchor.get("anchor_id")) for anchor in usable_anchors if anchor.get("anchor_id")],
+        "jd_anchor_text": [str(anchor.get("text") or "").strip() for anchor in usable_anchors if str(anchor.get("text") or "").strip()],
+        "evidence_ids": evidence_ids,
+        "company_fact": company_fact if has_verified_company_context else {},
+        "company_context": {
+            "nature": company_nature if has_verified_company_context else "",
+            "business": company_business if has_verified_company_context else "",
+            "application_target": application_target if has_verified_company_context else "",
+        },
+        "role_priorities": list(role_priorities[:2]),
+        "industry_interest": {
+            "allowed": allow_industry_interest,
+            "rule": (
+                "G may express one concrete, evidence-supported interest in AI, fintech, digital assets or another technology context."
+                if lane == "G"
+                else "A-F should lead with job function and business context; do not add generic industry admiration."
+            ),
+            "confirmed_angles": confirmed_interest[:1] if allow_industry_interest else [],
+        },
+        "fallback": {
+            "mode": fallback_mode,
+            "when": "company facts are unavailable, publisher/employer is not verified, or the match lacks usable evidence",
+            "action": "Use the JD-only or generic Cover Letter slot; do not invent a company fact and do not block apply.",
+        },
+        "instruction": (
+            "Write one compact paragraph of one or two sentences by replacing the generic "
+            "company-interest slot. Follow role requirement → candidate evidence → value. "
+            "Use only the supplied JD anchors and evidence IDs; avoid generic praise, "
+            "long company introductions, recruiter names and unsupported claims. "
+            "If the mode is omit, leave this optional slot out and keep the generic letter."
+        ),
     }
 
 
@@ -450,6 +610,20 @@ def build_tailored_payload(
         }
         for capability in jd_focus
     }
+    role_industry_match = build_role_industry_match_contract(
+        jd=jd,
+        jd_focus=jd_focus,
+        jd_anchors=list(llmo_contract.get("jd_anchors") or []),
+        jd_keywords=pick_jd_keywords(jd, limit=8),
+        role_priorities=role_priorities,
+        company_fact=company_fact,
+        company_nature=str(research.get("nature") or ""),
+        company_business=str(research.get("business") or ""),
+        application_target=application_target,
+        evidence_map_detail=evidence_map_detail,
+        base_id=str(base.get("base_id") or ""),
+        interest_angles=interest_angles,
+    )
 
     payload: dict[str, Any] = {
         "mode": "tailored_from_af_base",
@@ -494,10 +668,11 @@ def build_tailored_payload(
                 "cover_letter_company_policy"
             ),
             "instruction": (
-                "Use one specific verified employer fact and one genuine candidate "
-                "interest angle; omit either when unsupported. Never name a recruiter "
-                "or an undisclosed client."
+                "Use the role_industry_match contract to replace the generic company-interest "
+                "slot. Keep the paragraph to one or two sentences and the generic template's "
+                "length budget; fall back to JD-only or the generic letter without blocking apply."
             ),
+            "role_industry_match": role_industry_match,
         },
         "evidence_map": evidence_map,
         "evidence_map_detail": evidence_map_detail,
@@ -505,6 +680,8 @@ def build_tailored_payload(
         "quality_gate": quality_gate,
         "cover_letter_blueprint": {
             "company_fact": company_fact,
+            "role_industry_match": role_industry_match,
+            "length_budget": role_industry_match["length_budget"],
             "paragraphs": [
                 {
                     "slot": "opening",
@@ -512,13 +689,15 @@ def build_tailored_payload(
                     "instruction": "Name the role and lead with the strongest mapped capability.",
                 },
                 {
-                    "slot": "company_interest",
-                    "inputs": [company_fact, *(interest_angles[:1])],
-                    "instruction": (
-                        "Use one sourced employer fact and one supported interest angle; "
-                        "if the employer is undisclosed, write only role/industry context "
-                        "and do not name the publisher."
-                    ),
+                    "slot": "role_industry_match",
+                    "legacy_slot": "company_interest",
+                    "inputs": [
+                        role_industry_match.get("company_fact") or {},
+                        role_industry_match.get("jd_anchor_text") or [],
+                        role_industry_match.get("evidence_ids") or [],
+                    ],
+                    "evidence_ids": role_industry_match.get("evidence_ids") or [],
+                    "instruction": role_industry_match["instruction"],
                 },
                 {
                     "slot": "evidence",
@@ -554,6 +733,8 @@ def build_tailored_payload(
             "next_action": (
                 "draft_from_blueprint"
                 if quality_gate["ready_for_drafting"]
+                else "draft_generic_fallback"
+                if quality_gate.get("ready_for_generic_drafting")
                 else "complete_inputs"
             ),
             "required_order": [
@@ -563,6 +744,7 @@ def build_tailored_payload(
                 "evidence_map",
                 "llmo_anchor_status",
                 "cross_material_contract",
+                "role_industry_match_contract",
                 "cover_letter_blueprint",
                 "application_email_blueprint",
                 "fact_check",
@@ -573,6 +755,7 @@ def build_tailored_payload(
                 "llmo.evidence_nodes",
                 "llmo.cross_material",
                 "publisher_classification",
+                "cover_letter_blueprint.role_industry_match",
             ],
             "do_not_infer_missing_values": True,
             "allowed_transformations": [
@@ -580,6 +763,8 @@ def build_tailored_payload(
                 "lightly rephrase without changing meaning",
                 "connect sourced company fact to supported interest",
                 "use only evidence_ids linked to covered or partial JD anchors",
+                "replace the generic company-interest slot with one compact role/industry-match paragraph",
+                "omit the optional match paragraph and retain the generic letter when evidence is insufficient",
                 "name only the verified employer in outbound text",
             ],
             "prohibited_transformations": [
@@ -588,6 +773,8 @@ def build_tailored_payload(
                 "put key contact facts in images, text boxes, headers or footers",
                 "put a recruiter or agency name in an outbound filename or cover letter",
                 "guess an undisclosed client from the publisher name",
+                "append a new long company or industry paragraph",
+                "exceed the generic Cover Letter length budget or solve overflow by shrinking the layout",
             ],
         },
         "notes": [
@@ -814,6 +1001,23 @@ def write_tailor_outputs(package: Path, payload: dict[str, Any]) -> None:
         lines.append(f"- {angle}")
     if not angles:
         lines.append("- 未提供；不要编造兴趣。")
+    match = ((payload.get("cover_letter_blueprint") or {}).get("role_industry_match") or {})
+    budget = match.get("length_budget") or {}
+    lines += [
+        "",
+        "## Role/industry match (optional, replaces generic company-interest slot)",
+        f"- mode: {match.get('mode') or 'omit'}",
+        f"- context basis: {match.get('context_basis') or '—'}",
+        f"- sentences: 1–{(match.get('sentence_limit') or {}).get('max', 2)}",
+        f"- focus capabilities: {', '.join(match.get('focus_capabilities') or []) or '—'}",
+        f"- JD keywords: {', '.join(match.get('jd_keywords') or []) or '—'}",
+        f"- JD anchor IDs: {', '.join(match.get('jd_anchor_ids') or []) or '—'}",
+        f"- evidence IDs: {', '.join(match.get('evidence_ids') or []) or '—'}",
+        f"- length rule: {budget.get('rule') or 'same or shorter than generic slot'}",
+        f"- fallback: {(match.get('fallback') or {}).get('mode') or 'generic_role'}",
+        f"- apply blocking: {match.get('blocks_apply', False)}",
+        f"- instruction: {match.get('instruction') or 'Use the generic Cover Letter when unsupported.'}",
+    ]
     lines += ["", "## LLMO evidence contract"]
     llmo = payload.get("llmo") or {}
     cross = llmo.get("cross_material") or {}
@@ -903,11 +1107,28 @@ def write_materials_status(
         )
     quality_gate = payload.get("quality_gate") or {}
     if quality_gate and not quality_gate.get("ready_for_drafting", True):
-        blockers = ", ".join(str(item) for item in quality_gate.get("blockers") or [])
-        issues.append(
-            "quality gate is not ready for drafting — complete the source/evidence "
-            f"checks first ({blockers or 'see tailor_plan.json'})"
-        )
+        if quality_gate.get("ready_for_generic_drafting"):
+            soft = ", ".join(
+                str(item)
+                for item in quality_gate.get("blockers") or []
+                if item
+                in {
+                    "company_nature",
+                    "company_business",
+                    "verified_company_source",
+                    "company_role_priorities",
+                }
+            )
+            issues.append(
+                "company-specific tailoring is not fully sourced; use the safe "
+                f"JD-only/generic fallback ({soft or 'company context incomplete'})"
+            )
+        else:
+            blockers = ", ".join(str(item) for item in quality_gate.get("blockers") or [])
+            issues.append(
+                "quality gate is not ready for drafting — complete the source/evidence "
+                f"checks first ({blockers or 'see tailor_plan.json'})"
+            )
 
     next_steps = []
     if issues:
@@ -961,6 +1182,8 @@ def write_materials_status(
         f"- application_preflight.md/json: {'yes' if (package / 'application_preflight.json').exists() else 'no'}",
         f"- ready_for_apply: {preflight.get('ready_for_apply')}",
         f"- ready_for_drafting: {(payload.get('quality_gate') or {}).get('ready_for_drafting')}",
+        f"- ready_for_generic_drafting: {(payload.get('quality_gate') or {}).get('ready_for_generic_drafting')}",
+        f"- drafting_mode: {(payload.get('quality_gate') or {}).get('drafting_mode') or '—'}",
         "",
     ]
     if enrich_notes:

@@ -139,9 +139,13 @@ break or silently claim a deep semantic verdict.
 
 Materials use fact-checked direction bases (A–F, with an optional G capability
 lane), the full-JD cache, and a source-aware company brief. CV emphasis changes
-with the JD capability themes and company context. Cover letters use verified
-company facts and a genuine candidate interest angle; unsupported metrics,
-experience, company claims, or interest are never invented.
+with the JD capability themes and company context. Cover letters can replace the
+generic company-interest slot with a compact role/industry-match paragraph:
+one or two sentences following **role requirement → candidate evidence → value**.
+Verified company facts are preferred; when they are unavailable, the paragraph
+uses only the JD, role function or industry context, and it can be omitted when
+evidence is insufficient. It never adds to the generic one-page length budget or
+blocks `/apply`.
 
 A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
 

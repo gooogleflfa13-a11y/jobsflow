@@ -126,6 +126,15 @@ def test_tailor_combines_company_and_jd_into_differentiated_strategy():
         "https://"
     )
     assert len(first["cover_letter_blueprint"]["paragraphs"]) == 4
+    match = first["cover_letter_blueprint"]["role_industry_match"]
+    assert match["mode"] == "company_verified"
+    assert match["insert_mode"] == "replace_existing_company_interest"
+    assert match["sentence_limit"] == {"min": 1, "max": 2}
+    assert match["blocks_apply"] is False
+    assert match["evidence_ids"]
+    assert match["jd_keywords"]
+    assert first["cover_letter_blueprint"]["paragraphs"][1]["slot"] == "role_industry_match"
+    assert first["cover_letter_blueprint"]["paragraphs"][1]["legacy_slot"] == "company_interest"
 
 
 def test_low_model_quality_gate_blocks_generic_company_materials():
@@ -143,6 +152,81 @@ def test_low_model_quality_gate_blocks_generic_company_materials():
     assert payload["quality_gate"]["ready_for_drafting"] is False
     assert "verified_company_source" in payload["quality_gate"]["blockers"]
     assert payload["low_model_contract"]["next_action"] == "complete_inputs"
+    match = payload["cover_letter_blueprint"]["role_industry_match"]
+    assert match["mode"] == "jd_only"
+    assert match["fallback"]["mode"] == "jd_only"
+    assert match["blocks_apply"] is False
+
+
+def test_missing_company_context_allows_safe_jd_only_drafting_when_publisher_is_known():
+    payload = build_tailored_payload(
+        base=_base(),
+        job_title="Compliance Officer",
+        company="Acme",
+        jd_text=(
+            "Develop, implement and monitor a compliance programme while partnering "
+            "with operations and using technology to improve controls. Maintain policy "
+            "updates, conduct periodic reviews, and report remediation actions to stakeholders."
+        ),
+        company_research={},
+        publisher_context={
+            "publisher_name": "Acme",
+            "publisher_type": "employer",
+            "employer_name": "Acme",
+            "source_url": "https://acme.example/jobs/compliance",
+        },
+    )
+
+    gate = payload["quality_gate"]
+    assert gate["ready_for_drafting"] is False
+    assert gate["ready_for_generic_drafting"] is True
+    assert gate["drafting_mode"] == "jd_only_or_generic"
+    assert payload["low_model_contract"]["next_action"] == "draft_generic_fallback"
+
+
+def test_role_industry_match_omits_without_candidate_evidence_but_does_not_block_apply():
+    unrelated_base = {
+        "base_id": "X",
+        "label": "Hospitality",
+        "skills": ["Food preparation"],
+        "bullets": ["Prepared pastries and managed kitchen inventory."],
+        "factcheck": {"status": "passed"},
+    }
+    payload = build_tailored_payload(
+        base=unrelated_base,
+        job_title="Compliance Officer",
+        company="Acme",
+        jd_text=(
+            "Develop, implement and monitor a compliance programme. Partner with "
+            "regulators and automate controls across operations."
+        ),
+        company_research=_research("Acme", "cross-border payment services"),
+    )
+
+    match = payload["cover_letter_blueprint"]["role_industry_match"]
+    assert match["mode"] == "omit"
+    assert match["fallback"]["mode"] == "generic_role"
+    assert match["blocks_apply"] is False
+
+
+def test_role_industry_match_is_a_replacement_slot_with_one_page_budget():
+    payload = build_tailored_payload(
+        base=_base(),
+        job_title="Compliance Officer",
+        company="Acme",
+        jd_text=(
+            "Experience in developing, implementing and monitoring a compliance program. "
+            "Partner with operations and use technology to improve controls."
+        ),
+        company_research=_research("Acme", "cross-border payment services"),
+    )
+
+    blueprint = payload["cover_letter_blueprint"]
+    match = blueprint["role_industry_match"]
+    assert blueprint["length_budget"] == match["length_budget"]
+    assert match["length_budget"]["max_pages"] == 1
+    assert match["length_budget"]["rule"] == "same_or_shorter_than_replaced_company_interest_slot"
+    assert "append" not in match["length_budget"]["overflow_action"]
 
 
 def test_low_model_quality_gate_rejects_unrelated_candidate_evidence():

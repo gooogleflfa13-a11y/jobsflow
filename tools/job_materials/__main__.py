@@ -382,8 +382,14 @@ def cmd_tailor(args: argparse.Namespace) -> int:
     # When plan exists, surface quality issues for agents (unless pure tailor strict path already returned)
     code = package_quality_exit_code(payload, package, root)
     quality_gate = payload.get("quality_gate") or {}
-    if quality_gate and not quality_gate.get("ready_for_drafting", True):
+    if (
+        quality_gate
+        and not quality_gate.get("ready_for_drafting", True)
+        and not quality_gate.get("ready_for_generic_drafting", False)
+    ):
         code = code or 4
+    elif quality_gate and quality_gate.get("ready_for_generic_drafting"):
+        print("Company-specific sources are incomplete; safe JD-only/generic fallback remains available.")
     if code and args.allow_shallow_jd:
         # still wrote plan; non-zero so agents notice
         meta = jd_meta(package, root)
@@ -568,7 +574,11 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         )
         code = package_quality_exit_code(payload, package, root)
         quality_gate = payload.get("quality_gate") or {}
-        if quality_gate and not quality_gate.get("ready_for_drafting", True):
+        if (
+            quality_gate
+            and not quality_gate.get("ready_for_drafting", True)
+            and not quality_gate.get("ready_for_generic_drafting", False)
+        ):
             code = code or 4
         preflight = payload.get("application_preflight") or {}
         if not preflight.get("ready_for_apply", True):

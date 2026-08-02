@@ -124,8 +124,9 @@ python3 -m tools.job_materials pipeline --package "..." --lane A
 
 - Require a full JD for high-quality tailoring. If it cannot be retrieved, ask the
   user to paste it.
-- Research the company's nature, main business and role context. Store claims with
-  source URLs and distinguish sourced facts from inference.
+- Prefer researching the company's nature, main business and role context. Store
+  claims with source URLs and distinguish sourced facts from inference; if no
+  reliable source is available, use JD-only/role context rather than guessing.
 - Build a JD requirement map and connect every customized claim to verified résumé
   evidence. Unrelated evidence does not count.
 - Emit stable evidence IDs, requirement coverage states (`covered`, `partial`,
@@ -137,8 +138,17 @@ python3 -m tools.job_materials pipeline --package "..." --lane A
   model-memory writing or an ATS score guarantee.
 - Tailoring may reorder, select and conservatively rephrase evidence; it may not
   invent duties, outcomes, tools, qualifications or motivation.
-- The cover letter should express specific, evidence-based interest in the company
-  or industry rather than generic praise.
+- The tailored cover letter should use the existing company-interest slot for one
+  compact 1–2 sentence role/industry-match paragraph: role requirement or business
+  context → fact-checked candidate evidence → value contribution. Use real JD
+  anchors; do not repeat the full résumé or write generic praise.
+- This paragraph replaces a generic slot and must stay within the generic Cover
+  Letter's one-page/length budget. If reliable company facts are unavailable, use
+  JD-only or role context; if evidence is insufficient, omit the optional paragraph
+  and allow the generic letter to proceed. Its absence is not an `/apply` blocker.
+- A–F should emphasize job function and business context. G may add a concrete,
+  evidence-supported interest in AI, fintech, digital assets or another technology
+  context when the JD supports it.
 - Identify whether the listing is posted directly by the hiring company or via a
   recruiter / staffing agency / consultancy. If the poster is a recruiter or
   agency, do NOT use the recruiter's name in the output file name or in the

@@ -14,10 +14,16 @@
 
 ## 流程
 
-1. 按 `.claude/commands/materials.md` 完成 application preflight、完整 JD、来源化公司快查、A–F 基础版事实核验和差异化定制。
+1. 按 `.claude/commands/materials.md` 完成 application preflight、完整 JD、来源化公司快查（如有可靠来源）、A–F 基础版事实核验和差异化定制。
 2. 展示 fit、真实缺口、公司/JD 定制重点，并让用户确认是否继续完成材料。
-3. 只有 `application_preflight.ready_for_apply=true` 且 `quality_gate.ready_for_drafting=true` 才生成或更新 CV/CL DOCX；不得覆盖 master，不得编造雇主、职责、指标、资格或候选人兴趣。
-4. Cover Letter 只使用有 `source_url` 的公司事实，并将其连接到用户已经表达或履历能够支持的兴趣。
+3. 只有 `application_preflight.ready_for_apply=true` 且
+   `quality_gate.ready_for_drafting=true` 或
+   `quality_gate.ready_for_generic_drafting=true` 才生成或更新 CV/CL DOCX。
+   后一种情况只能使用 JD-only 或通用版 Cover Letter，不得把缺少的公司资料补成
+   事实；不得覆盖 master，不得编造雇主、职责、指标、资格或候选人兴趣。
+4. Cover Letter 的岗位/行业匹配段只使用有 `source_url` 的公司事实，并将其连接到
+   用户已经表达或履历能够支持的兴趣；没有可靠公司信息时，改用 JD 和已提供材料，
+   或省略该可选段落。
 5. 发送前核对 `publisher_type`、`publisher_name`、`employer_name`：猎头/招聘机构只作为内部来源记录，不能出现在外发文件名或 Cover Letter 中；客户未披露时不猜测用人公司。
 6. 使用 `tailor_plan.json.material_filenames` 的外发命名建议，再从 master 复制并编辑 DOCX。内容定稿后各执行一次 LibreOffice headless PDF 转换；CV 与 Cover Letter 均须 1 页。相同 DOCX 内容直接复用 PDF 哈希缓存。
 7. 验证 PDF 页数、可读文字层、联系方式、JD 关键词覆盖与公司事实来源。失败时修正文案/DOCX 后重建；不得靠缩放隐藏内容。

@@ -67,6 +67,11 @@ for either a capable or lower-capability model. It requires:
 - explicit uncertainties;
 - potential interest angles for the user to confirm.
 
+These inputs improve the company-aware variant but are not a reason to invent facts
+or block a safe fallback. When no reliable company source is available, use the
+full JD and fact-checked candidate evidence to produce `jd_only_or_generic`
+materials instead.
+
 An interest angle is not a candidate fact. The model must not state admiration or
 motivation until the user confirms it.
 
@@ -110,7 +115,16 @@ python3 -m tools.job_materials company set \
 
 `tailor_plan.json.low_model_contract` defines the required execution order so a
 less capable model cannot skip preflight, company research, evidence mapping,
-fact checking or PDF validation.
+fact checking, the optional role/industry-match slot or PDF validation.
+
+The tailored Cover Letter blueprint replaces the generic company-interest slot
+with `cover_letter_blueprint.role_industry_match`. It is a compact one-paragraph,
+one-to-two-sentence contract following `role requirement → candidate evidence →
+value`. Its `length_budget` is tied to the generic Cover Letter slot, so it must
+not make the letter longer or push it beyond one A4 page. A verified company fact
+may be used when available; otherwise the contract falls back to JD-only or
+generic-role context. If evidence is insufficient, the slot may be omitted and
+the generic Cover Letter can still proceed to `/apply`.
 
 ## LLMO contract (evidence alignment, not model-memory claims)
 
@@ -139,10 +153,12 @@ Archive directories named `_archive`, `archive` or `archives` are excluded from
 active master/package selection. Keep old submitted versions there so the
 current material cannot be selected by filesystem timestamp alone.
 
-The pipeline exits non-zero while the quality gate is blocked (for example when
-company sources or candidate evidence are missing). It still writes the request
-and plan artifacts so the next action is explicit; do not draft final materials
-until `quality_gate.ready_for_drafting` is true.
+The pipeline surfaces a strict quality-gate warning when company sources or
+candidate evidence are missing, but a safe JD-only/generic fallback may proceed
+when `quality_gate.ready_for_generic_drafting=true`. It still writes the request
+and plan artifacts so the next action is explicit. Do not use company-specific
+claims unless `quality_gate.ready_for_drafting=true`; a fallback Cover Letter may
+omit the optional role/industry-match slot and remain eligible for `/apply`.
 
 ## PDF
 
