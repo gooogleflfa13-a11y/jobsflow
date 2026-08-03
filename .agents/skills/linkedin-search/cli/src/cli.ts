@@ -7,7 +7,7 @@
 // against LinkedIn's Terms of Service, so keep volume low and do not use it
 // commercially or for bulk data collection. Run it on your own responsibility.
 
-import { runSearch, type SearchOpts } from "./commands/search.js"
+import { runSearch, searchData, type SearchOpts } from "./commands/search.js"
 import { runDetail, type DetailOpts } from "./commands/detail.js"
 
 interface Flags {
@@ -40,6 +40,7 @@ const HELP = `linkedin-cli — search jobs on LinkedIn (any country/region, plus
 
 USAGE
   bun run src/cli.ts search --location "<place>" [flags]
+  bun run src/cli.ts batch --delay-ms <milliseconds> < requests.jsonl
   bun run src/cli.ts detail <id|url> [--format json|plain]
 
 SEARCH FLAGS
@@ -60,6 +61,59 @@ EXAMPLES
 
 Personal use only — uses LinkedIn's public pages; keep volume low (LinkedIn ToS).
 `
+
+interface BatchRequest {
+  request_id?: unknown
+  query?: unknown
+  location?: unknown
+  jobage?: unknown
+  remote?: unknown
+  page?: unknown
+  limit?: unknown
+}
+
+function batchNumber(raw: unknown, fallback: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw
+  if (typeof raw === "string") {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return fallback
+}
+
+function batchSleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve()
+}
+
+/** Keep one LinkedIn process alive; requests for this portal are serial. */
+async function runBatch(delayMs: number): Promise<number> {
+  const input = await Bun.stdin.text()
+  const lines = input.split(/\r?\n/).filter((line) => line.trim())
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0) await batchSleep(delayMs)
+    let requestId = `line-${index + 1}`
+    try {
+      const request = JSON.parse(lines[index]) as BatchRequest
+      if (!request || typeof request !== "object") throw new Error("request must be a JSON object")
+      if (request.request_id !== undefined) requestId = String(request.request_id)
+      const location = typeof request.location === "string" ? request.location : "Hong Kong"
+      const payload = await searchData({
+        query: typeof request.query === "string" ? request.query : undefined,
+        location,
+        jobage: batchNumber(request.jobage, 9999),
+        remote: typeof request.remote === "string" ? request.remote : undefined,
+        page: Math.max(1, Math.trunc(batchNumber(request.page, 1))),
+        limit: Math.max(1, Math.trunc(batchNumber(request.limit, 30))),
+        format: "json",
+      })
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: true, payload }) + "\n")
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: false, error }) + "\n")
+    }
+  }
+  return 0
+}
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
@@ -119,6 +173,13 @@ async function main(): Promise<number> {
       format: (["json", "table", "plain"].includes(fmt) ? fmt : "json") as SearchOpts["format"],
     }
     return runSearch(opts)
+  }
+
+  if (cmd === "batch") {
+    const rawDelay = flags["delay-ms"]
+    const parsedDelay = typeof rawDelay === "string" ? Number(rawDelay) : 0
+    const delayMs = Number.isFinite(parsedDelay) ? Math.max(0, Math.trunc(parsedDelay)) : 0
+    return runBatch(delayMs)
   }
 
   if (cmd === "detail") {

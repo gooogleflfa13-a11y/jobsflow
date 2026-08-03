@@ -7,7 +7,8 @@
 // browser obtains as cookies. This CLI reads them from env vars or bootstraps
 // them from the homepage. See url-reference.md.
 
-import { runSearch, type SearchOpts } from "./commands/search.js"
+import { resolveHeaders } from "./helpers.js"
+import { runSearch, searchData, type SearchOpts } from "./commands/search.js"
 import { runDetail, type DetailOpts } from "./commands/detail.js"
 
 interface Flags {
@@ -52,6 +53,7 @@ const HELP = `ctgoodjobs-cli — search CTgoodjobs Hong Kong job listings (https
 
 USAGE
   bun run src/cli.ts search [-q "<keywords>"] [--jobage <days>] [--page <n>] [--limit <n>] [--format json|table|plain]
+  bun run src/cli.ts batch --delay-ms <milliseconds> < requests.jsonl
   bun run src/cli.ts detail <id|url> [--format json|plain]
 
 SEARCH FLAGS
@@ -78,6 +80,71 @@ AUTHENTICATION
   only — keep volume low.
 `
 
+interface BatchRequest {
+  request_id?: unknown
+  query?: unknown
+  jobage?: unknown
+  page?: unknown
+  limit?: unknown
+}
+
+function batchNumber(raw: unknown, fallback: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw
+  if (typeof raw === "string") {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return fallback
+}
+
+function batchSleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve()
+}
+
+/**
+ * Keep one Bun process alive for all CT queries in a scan. The session headers
+ * are resolved once, while requests remain strictly serial within this worker.
+ */
+async function runBatch(delayMs: number): Promise<number> {
+  const input = await Bun.stdin.text()
+  const lines = input.split(/\r?\n/).filter((line) => line.trim())
+  if (lines.length === 0) return 0
+
+  let headers: Record<string, string> | undefined
+  let headerError: string | undefined
+  try {
+    headers = await resolveHeaders()
+  } catch (e) {
+    headerError = e instanceof Error ? e.message : String(e)
+  }
+
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0) await batchSleep(delayMs)
+    let requestId = `line-${index + 1}`
+    try {
+      const request = JSON.parse(lines[index]) as BatchRequest
+      if (!request || typeof request !== "object") throw new Error("request must be a JSON object")
+      if (request.request_id !== undefined) requestId = String(request.request_id)
+      if (headerError) throw new Error(headerError)
+      const payload = await searchData(
+        {
+          query: typeof request.query === "string" ? request.query : undefined,
+          jobage: batchNumber(request.jobage, 9999),
+          page: Math.max(1, Math.trunc(batchNumber(request.page, 1))),
+          limit: Math.max(1, Math.trunc(batchNumber(request.limit, 30))),
+          format: "json",
+        },
+        headers,
+      )
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: true, payload }) + "\n")
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: false, error }) + "\n")
+    }
+  }
+  return 0
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const flags = parseFlags(argv)
@@ -98,6 +165,11 @@ async function main(): Promise<number> {
       format: (["json", "table", "plain"].includes(fmt) ? fmt : "json") as SearchOpts["format"],
     }
     return runSearch(opts)
+  }
+
+  if (cmd === "batch") {
+    const delayMs = Math.max(0, Math.trunc(parseIntOr(flags["delay-ms"], 0)))
+    return runBatch(delayMs)
   }
 
   if (cmd === "detail") {

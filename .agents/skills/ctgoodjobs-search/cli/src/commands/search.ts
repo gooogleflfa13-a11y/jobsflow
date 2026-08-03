@@ -8,6 +8,11 @@ export interface SearchOpts {
   format: "json" | "table" | "plain"
 }
 
+export interface SearchPayload {
+  meta: { count: number; page: number; total: number | null }
+  results: JobResult[]
+}
+
 function renderTable(cards: JobResult[]): string {
   if (cards.length === 0) return "No results."
   const rows = cards.map((c) => {
@@ -22,38 +27,55 @@ function renderTable(cards: JobResult[]): string {
   return [header, "-".repeat(header.length), ...rows].join("\n")
 }
 
+/** Fetch and normalize one search without writing to stdout.
+ *
+ * `headersOverride` is used by the batch worker so the CTgoodjobs session is
+ * bootstrapped once per worker instead of once per query.
+ */
+export async function searchData(
+  opts: SearchOpts,
+  headersOverride?: Record<string, string>,
+): Promise<SearchPayload> {
+  const headers = headersOverride ?? (await resolveHeaders())
+  // CTgoodjobs search is a POST. `keyword` is free text; pageSize caps the page.
+  const body: Record<string, unknown> = {
+    PagingInputs: {
+      page: opts.page,
+      pageSize: opts.limit && opts.limit > 0 ? Math.min(opts.limit, 100) : 30,
+    },
+  }
+  if (opts.query) body.keyword = opts.query
+
+  const env = await searchPost(headers, body)
+  let cards = (env.data.jobs || []).map(toResult)
+
+  // `--jobage` is not a first-class server filter here, so narrow by publish
+  // date on the client (based on the ISO `timestamp` when available).
+  if (opts.jobage && opts.jobage < 9999) {
+    const cutoff = Date.now() - opts.jobage * 86400_000
+    cards = cards.filter((c) => {
+      if (!c.date) return true
+      const t = Date.parse(c.date)
+      return isNaN(t) ? true : t >= cutoff
+    })
+  }
+  if (opts.limit !== undefined && opts.limit >= 0) cards = cards.slice(0, opts.limit)
+
+  return {
+    meta: { count: cards.length, page: opts.page, total: env.data.meta.jobsTotal ?? env.data.total ?? null },
+    results: cards,
+  }
+}
+
 export async function runSearch(opts: SearchOpts): Promise<number> {
   try {
-    const headers = await resolveHeaders()
-    // CTgoodjobs search is a POST. `keyword` is free text; pageSize caps the page.
-    const body: Record<string, unknown> = {
-      PagingInputs: {
-        page: opts.page,
-        pageSize: opts.limit && opts.limit > 0 ? Math.min(opts.limit, 100) : 30,
-      },
-    }
-    if (opts.query) body.keyword = opts.query
-
-    const env = await searchPost(headers, body)
-    let cards = (env.data.jobs || []).map(toResult)
-
-    // `--jobage` is not a first-class server filter here, so narrow by publish
-    // date on the client (based on the ISO `timestamp` when available).
-    if (opts.jobage && opts.jobage < 9999) {
-      const cutoff = Date.now() - opts.jobage * 86400_000
-      cards = cards.filter((c) => {
-        if (!c.date) return true
-        const t = Date.parse(c.date)
-        return isNaN(t) ? true : t >= cutoff
-      })
-    }
-    if (opts.limit !== undefined && opts.limit >= 0) cards = cards.slice(0, opts.limit)
+    const payload = await searchData(opts)
 
     if (opts.format === "table") {
-      process.stdout.write(renderTable(cards) + "\n")
+      process.stdout.write(renderTable(payload.results) + "\n")
     } else if (opts.format === "plain") {
       process.stdout.write(
-        cards
+        payload.results
           .map(
             (c) =>
               `${c.title}\n  ${c.company || "—"} · ${c.location || "—"} · ${c.date || "—"}\n  id: ${c.id}\n  ${c.url}`,
@@ -62,14 +84,7 @@ export async function runSearch(opts: SearchOpts): Promise<number> {
       )
     } else {
       process.stdout.write(
-        JSON.stringify(
-          {
-            meta: { count: cards.length, page: opts.page, total: env.data.meta.jobsTotal ?? env.data.total ?? null },
-            results: cards,
-          },
-          null,
-          2,
-        ) + "\n",
+        JSON.stringify(payload, null, 2) + "\n",
       )
     }
     return 0

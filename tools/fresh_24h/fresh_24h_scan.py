@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -277,6 +278,155 @@ def run_portal_search(
     if not isinstance(results, list):
         return [], "results not a list"
     return results, None
+
+
+# Search workers are intentionally scoped to one portal.  A worker receives all
+# of that portal's query terms, executes them serially, and exits after the
+# scan.  This preserves portal rate limiting while avoiding one Bun startup and
+# one CTgoodjobs session bootstrap for every query.
+BATCH_PORTALS = {"linkedin", "jobsdb", "ctgoodjobs"}
+BATCH_WORKER_MAX_SECONDS = 300
+
+
+def run_portal_batch(
+    repo: Path,
+    cli_rel: str,
+    requests: list[dict[str, Any]],
+    *,
+    portal: str,
+    delay_seconds: float,
+    timeout: int = PORTAL_SUBPROCESS_TIMEOUT_SECONDS,
+) -> list[tuple[dict[str, Any], list[dict[str, Any]], str | None]]:
+    """Run one long-lived portal CLI worker for a batch of serial queries.
+
+    The CLI speaks a small JSON-lines protocol: one request line in, one result
+    line out.  The process is still batch-fed (rather than kept as a daemon),
+    but it lives for the complete portal batch, which is enough to reuse CT's
+    session headers and eliminate repeated Bun startup overhead.
+    """
+    if not requests:
+        return []
+    cli = repo / cli_rel
+    if not cli.exists():
+        error = f"CLI missing: {cli_rel}"
+        return [(request, [], error) for request in requests]
+
+    wire_requests: list[dict[str, Any]] = []
+    for request in requests:
+        wire_requests.append(
+            {
+                "request_id": request["request_id"],
+                "query": request.get("term"),
+                "jobage": request.get("jobage", 9999),
+                "page": 1,
+                "limit": request.get("limit", 15),
+                "location": request.get("location"),
+            }
+        )
+    input_text = "".join(
+        json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n"
+        for item in wire_requests
+    )
+    delay_ms = max(0, round(max(0.0, delay_seconds) * 1000))
+    cmd = ["bun", "run", str(cli), "batch", "--delay-ms", str(delay_ms)]
+
+    # Keep the old per-query timeout as the lower bound, but cap a whole worker
+    # at five minutes so a broken portal cannot stall the other two forever.
+    batch_timeout = max(timeout, min(timeout * len(requests), BATCH_WORKER_MAX_SECONDS))
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo),
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=batch_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        error = f"batch worker timeout after {batch_timeout}s"
+        return [(request, [], error) for request in requests]
+    except FileNotFoundError:
+        error = "bun not found on PATH"
+        return [(request, [], error) for request in requests]
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[:400]
+        error = f"batch worker exit {proc.returncode}: {err}"
+        return [(request, [], error) for request in requests]
+
+    responses: dict[str, tuple[list[dict[str, Any]], str | None]] = {}
+    parse_error: str | None = None
+    for line in (proc.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        try:
+            envelope = json.loads(line)
+        except json.JSONDecodeError as exc:
+            parse_error = f"batch worker JSON decode error: {exc}"
+            continue
+        if not isinstance(envelope, dict):
+            parse_error = "batch worker response is not a JSON object"
+            continue
+        request_id = str(envelope.get("request_id") or "")
+        if not request_id:
+            parse_error = "batch worker response missing request_id"
+            continue
+        if not envelope.get("ok"):
+            responses[request_id] = ([], str(envelope.get("error") or "search failed"))
+            continue
+        payload = envelope.get("payload")
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            responses[request_id] = ([], "batch worker payload.results is not a list")
+            continue
+        responses[request_id] = (results, None)
+
+    output: list[tuple[dict[str, Any], list[dict[str, Any]], str | None]] = []
+    for request in requests:
+        request_id = str(request["request_id"])
+        results, error = responses.get(
+            request_id,
+            ([], parse_error or "batch worker returned no response"),
+        )
+        output.append((request, results, error))
+    return output
+
+
+def run_portal_requests(
+    repo: Path,
+    cli_rel: str,
+    requests: list[dict[str, Any]],
+    *,
+    portal: str,
+    delay_seconds: float,
+) -> list[tuple[dict[str, Any], list[dict[str, Any]], str | None]]:
+    """Dispatch a portal batch, with a serial fallback for legacy portals."""
+    if portal in BATCH_PORTALS:
+        return run_portal_batch(
+            repo,
+            cli_rel,
+            requests,
+            portal=portal,
+            delay_seconds=delay_seconds,
+        )
+
+    # Keep unconverted/optional portals working while the three primary HK
+    # portals use the new worker protocol.
+    output: list[tuple[dict[str, Any], list[dict[str, Any]], str | None]] = []
+    for index, request in enumerate(requests):
+        results, error = run_portal_search(
+            repo,
+            cli_rel,
+            str(request.get("term") or ""),
+            portal=portal,
+            jobage=int(request.get("jobage") or 9999),
+            location=request.get("location"),
+            limit=int(request.get("limit") or 15),
+        )
+        output.append((request, results, error))
+        if index < len(requests) - 1 and delay_seconds > 0:
+            time.sleep(delay_seconds)
+    return output
 
 
 def card_to_hit(
@@ -662,7 +812,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Merge new URLs into job_scraper/seen_jobs.json",
     )
-    ap.add_argument("--sleep", type=float, default=0.6, help="Seconds between CLI calls")
+    ap.add_argument(
+        "--sleep",
+        type=float,
+        default=0.6,
+        help="Seconds between serial queries within each portal worker",
+    )
     args = ap.parse_args(argv)
 
     repo: Path = args.repo.resolve()
@@ -723,6 +878,13 @@ def main(argv: list[str] | None = None) -> int:
     seen_urls: set[str] = set()
     seen_ct: set[str] = set()
 
+    # Build the same query/portal work list as the old nested loop, then group
+    # it by portal.  Workers run concurrently across portals, but each grouped
+    # list remains strictly serial inside its own worker.  `_sequence` lets us
+    # merge responses in the original order so dedupe decisions stay stable.
+    work_items: list[dict[str, Any]] = []
+    work_by_portal: dict[str, list[dict[str, Any]]] = {}
+    portal_cfg_by_name: dict[str, dict[str, Any]] = {}
     for q in cfg.get("queries") or []:
         qid = q.get("id") or "q"
         track_hint = q.get("track_hint") or "F"
@@ -736,85 +898,127 @@ def main(argv: list[str] | None = None) -> int:
                 term = terms.get("linkedin") or terms.get("jobsdb")
             if not term:
                 continue
-            # Portal jobage bucket from window; still client-filter to scan_hours
-            jobage = hours_to_jobage(scan_hours, portal)
-            cli_rel = pcfg["cli"]
-            results, err = run_portal_search(
-                repo,
-                cli_rel,
-                term,
-                portal=portal,
-                jobage=jobage,
-                location=location if portal == "linkedin" else None,
-                limit=args.limit_per_query,
-            )
-            call_log.append(
-                {
-                    "portal": portal,
-                    "query_id": qid,
-                    "term": term,
-                    "jobage": jobage,
-                    "count": len(results),
-                    "error": err,
-                    "ct_cookie_expired": bool(
-                        err and portal == "ctgoodjobs" and ("400" in err or "sid" in err.lower())
-                    ) if err else False,
-                }
-            )
-            if err:
-                err_info = {"portal": portal, "query_id": qid, "error": err}
-                if portal == "ctgoodjobs" and ("400" in err or "sid" in err.lower()):
-                    err_info["ct_cookie_expired"] = True
-                    print(
-                        f"[warn] {portal}/{qid}: CTgoodjobs cookie expired or invalid — "
-                        f"set CTGOOD_SID + CTGOOD_VISITOR_ID env vars or delete them to trigger re-bootstrap",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(f"[warn] {portal}/{qid}: {err}", file=sys.stderr)
-                errors.append(err_info)
-            for card in results:
-                hit = card_to_hit(
-                    card, source=portal, query_id=qid, track_hint=track_hint
-                )
-                if not hit.url and not hit.title:
-                    continue
-                # Client-side recency = resolved window (daily 24h or temp since last)
-                client_h = pcfg.get("client_max_hours")
-                jobsdb_h = float(scan_hours) if client_h is not None else None
-                apply_recency(
-                    hit,
-                    max_hours=scan_hours,
+            request = {
+                "request_id": f"{portal}:{len(work_items)}",
+                "_sequence": len(work_items),
+                "portal": portal,
+                "query_id": qid,
+                "track_hint": track_hint,
+                "term": term,
+                "jobage": hours_to_jobage(scan_hours, portal),
+                "location": location if portal == "linkedin" else None,
+                "limit": args.limit_per_query,
+            }
+            work_items.append(request)
+            work_by_portal.setdefault(portal, []).append(request)
+            portal_cfg_by_name[portal] = pcfg
+
+    worker_results: dict[str, list[tuple[dict[str, Any], list[dict[str, Any]], str | None]]] = {}
+    if work_by_portal:
+        with ThreadPoolExecutor(
+            max_workers=len(work_by_portal),
+            thread_name_prefix="jobsflow-portal",
+        ) as executor:
+            futures = {
+                portal: executor.submit(
+                    run_portal_requests,
+                    repo,
+                    portal_cfg_by_name[portal]["cli"],
+                    requests,
                     portal=portal,
-                    jobsdb_client_hours=jobsdb_h,
+                    delay_seconds=args.sleep,
                 )
-                apply_rules(hit, cfg)
+                for portal, requests in work_by_portal.items()
+            }
+            for portal, future in futures.items():
+                try:
+                    worker_results[portal] = future.result()
+                except Exception as exc:  # defensive: one worker must not hide others
+                    error = f"portal worker crashed: {exc}"
+                    worker_results[portal] = [
+                        (request, [], error) for request in work_by_portal[portal]
+                    ]
 
-                # dedupe within run
-                uk = hit.url or f"{hit.source}:{hit.id}"
-                ck = company_title_key(hit.company, hit.title)
-                if uk in seen_urls or (ck != "—||" and ck in seen_ct):
+    responses: dict[str, tuple[list[dict[str, Any]], str | None]] = {}
+    for rows in worker_results.values():
+        for request, results, err in rows:
+            responses[str(request["request_id"])] = (results, err)
+
+    for request in work_items:
+        portal = str(request["portal"])
+        qid = str(request["query_id"])
+        track_hint = str(request["track_hint"])
+        pcfg = portal_cfg_by_name[portal]
+        results, err = responses.get(
+            str(request["request_id"]),
+            ([], "portal worker returned no response"),
+        )
+        call_log.append(
+            {
+                "portal": portal,
+                "query_id": qid,
+                "term": request["term"],
+                "jobage": request["jobage"],
+                "count": len(results),
+                "error": err,
+                "worker": "portal_batch" if portal in BATCH_PORTALS else "legacy_serial",
+                "session_reuse": portal == "ctgoodjobs",
+                "ct_cookie_expired": bool(
+                    err
+                    and portal == "ctgoodjobs"
+                    and ("400" in err or "sid" in err.lower())
+                ),
+            }
+        )
+        if err:
+            err_info = {"portal": portal, "query_id": qid, "error": err}
+            if portal == "ctgoodjobs" and ("400" in err or "sid" in err.lower()):
+                err_info["ct_cookie_expired"] = True
+                print(
+                    f"[warn] {portal}/{qid}: CTgoodjobs cookie expired or invalid — "
+                    f"set CTGOOD_SID + CTGOOD_VISITOR_ID env vars or delete them to trigger re-bootstrap",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"[warn] {portal}/{qid}: {err}", file=sys.stderr)
+            errors.append(err_info)
+        for card in results:
+            hit = card_to_hit(card, source=portal, query_id=qid, track_hint=track_hint)
+            if not hit.url and not hit.title:
+                continue
+            # Client-side recency = resolved window (daily 24h or temp since last)
+            client_h = pcfg.get("client_max_hours")
+            jobsdb_h = float(scan_hours) if client_h is not None else None
+            apply_recency(
+                hit,
+                max_hours=scan_hours,
+                portal=portal,
+                jobsdb_client_hours=jobsdb_h,
+            )
+            apply_rules(hit, cfg)
+
+            # dedupe within run
+            uk = hit.url or f"{hit.source}:{hit.id}"
+            ck = company_title_key(hit.company, hit.title)
+            if uk in seen_urls or (ck != "—||" and ck in seen_ct):
+                hit.decision = "duplicate"
+                hit.reject_reason = hit.reject_reason or "duplicate_in_run"
+            else:
+                seen_urls.add(uk)
+                seen_ct.add(ck)
+
+            # tracker dedupe
+            bare = ""
+            m = re.search(r"/(\d{8,})(?:/|$)", hit.url)
+            if m:
+                bare = m.group(1)
+            if hit.url in url_keys or bare in url_keys or ck in ct_keys:
+                hit.in_tracker = True
+                if hit.decision == "new":
                     hit.decision = "duplicate"
-                    hit.reject_reason = hit.reject_reason or "duplicate_in_run"
-                else:
-                    seen_urls.add(uk)
-                    seen_ct.add(ck)
+                    hit.reject_reason = "already_in_tracker"
 
-                # tracker dedupe
-                bare = ""
-                m = re.search(r"/(\d{8,})(?:/|$)", hit.url)
-                if m:
-                    bare = m.group(1)
-                if hit.url in url_keys or bare in url_keys or ck in ct_keys:
-                    hit.in_tracker = True
-                    if hit.decision == "new":
-                        hit.decision = "duplicate"
-                        hit.reject_reason = "already_in_tracker"
-
-                all_hits.append(hit)
-
-            if args.sleep > 0:
-                time.sleep(args.sleep)
+            all_hits.append(hit)
 
     # Sort: new first, then by age
     def sort_key(h: JobHit) -> tuple:

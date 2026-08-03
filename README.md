@@ -28,6 +28,14 @@ JobsFlow 不是“帮你写一份简历”的工具，而是一个**帮你搜岗
 > JobsFlow 是一套**在你电脑上跑的求职流水线**：用已有简历定范围找岗、排出优先顺序、管住投递状态、按岗位出齐材料，并每天跟上新职位。  
 > 默认本地优先，也不会替你自动点「提交」。只有你显式使用 Google Sheets 或外部 LLM 时，相关数据才会发送到对应服务；启用前请确认隐私政策与权限。
 
+## 🆕 最新更新 · 2026-08-03
+
+本次更新把三门户检索改成了**门户级并行、门户内串行**的 worker 架构：LinkedIn、JobsDB、CTgoodjobs 各自运行一个扫描 worker，三个门户可以同时检索；同一门户内仍按查询顺序逐条执行，并保留原有查询间隔，避免为了提速而增加单一门户的访问压力。
+
+worker 在一次扫描期间保持运行并复用门户进程。CTgoodjobs 的 session headers 只在 worker 启动时解析一次，减少重复的 Bun 启动、网络握手和 session 初始化。`/scan` 的用法、评分门槛、JD 深读和材料流程均不变；更新后直接照常运行 `/scan temp` 或 `/scan daily` 即可。
+
+这项更新主要改善检索阶段的等待时间。实际速度仍会受到网络延迟、门户响应、限流/验证码和重试影响；基础扫描不依赖外部大模型，模型能力不会改变门户 worker 的并行策略。每次扫描完成后 worker 会退出，下一次扫描重新建立，避免长期复用过期 session。
+
 ## 🎯 解决什么问题？
 
 求职难，往往不是「找不到链接」，而是**整条链路运营不起来**：
@@ -68,7 +76,7 @@ JobsFlow 不是“帮你写一份简历”的工具，而是一个**帮你搜岗
 ### 1. Clone
 
 ```bash
-git clone https://github.com/gooogleflfa13-a11y/jobsflow.git
+git clone https://github.com/mixxmax/jobsflow.git
 cd jobsflow
 ```
 

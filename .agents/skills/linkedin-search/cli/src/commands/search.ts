@@ -18,6 +18,11 @@ export interface SearchOpts {
   format: "json" | "table" | "plain"
 }
 
+export interface SearchPayload {
+  meta: { count: number; page: number }
+  results: JobCard[]
+}
+
 function buildUrl(opts: SearchOpts): string {
   const params = new URLSearchParams()
   if (opts.query) params.set("keywords", opts.query)
@@ -51,17 +56,27 @@ function renderTable(cards: JobCard[]): string {
   return [header, "-".repeat(header.length), ...rows].join("\n")
 }
 
+/** Fetch and normalize one search without writing to stdout. */
+export async function searchData(opts: SearchOpts): Promise<SearchPayload> {
+  const html = await htmlFetch(buildUrl(opts))
+  let cards = parseJobCards(html)
+  if (opts.limit !== undefined && opts.limit >= 0) cards = cards.slice(0, opts.limit)
+
+  return {
+    meta: { count: cards.length, page: opts.page },
+    results: cards,
+  }
+}
+
 export async function runSearch(opts: SearchOpts): Promise<number> {
   try {
-    const html = await htmlFetch(buildUrl(opts))
-    let cards = parseJobCards(html)
-    if (opts.limit !== undefined && opts.limit >= 0) cards = cards.slice(0, opts.limit)
+    const payload = await searchData(opts)
 
     if (opts.format === "table") {
-      process.stdout.write(renderTable(cards) + "\n")
+      process.stdout.write(renderTable(payload.results) + "\n")
     } else if (opts.format === "plain") {
       process.stdout.write(
-        cards
+        payload.results
           .map(
             (c) =>
               `${c.title}\n  ${c.company || "—"} · ${c.location || "—"} · ${c.date || "—"}\n  id: ${c.id}\n  ${c.url}`,
@@ -70,11 +85,7 @@ export async function runSearch(opts: SearchOpts): Promise<number> {
       )
     } else {
       process.stdout.write(
-        JSON.stringify(
-          { meta: { count: cards.length, page: opts.page }, results: cards },
-          null,
-          2,
-        ) + "\n",
+        JSON.stringify(payload, null, 2) + "\n",
       )
     }
     return 0

@@ -9,6 +9,14 @@ cover letters, and application review in one local-first workflow. It is not
 just an AI resume writer: it helps you decide what to apply for, why you fit,
 and how to tailor the application without giving up final control.
 
+## 🆕 Latest update · 2026-08-03
+
+The scan path now uses **portal-level parallel workers with serial queries inside each portal**. LinkedIn, JobsDB, and CTgoodjobs each run one worker, so the three portals can be searched at the same time while each portal keeps its original query order and pacing.
+
+Each worker stays alive for the duration of one scan and reuses the portal process. CTgoodjobs session headers are resolved once when its worker starts, reducing repeated Bun startup, network handshakes, and session bootstrap work. The `/scan` syntax, scoring gates, JD deep-read path, and materials workflow are unchanged: run `/scan temp` or `/scan daily` as usual.
+
+This update targets scan wait time. Actual speed still depends on network latency, portal responses, rate limits/CAPTCHA, and retries. The base scan is deterministic and does not require an external LLM, so model capability does not change the worker parallelism. Workers exit after each scan so stale sessions are not kept indefinitely.
+
 - **Fewer wasted applications:** two-pass scoring filters before deep JD work.
 - **More relevant materials:** company context and JD priorities drive the CV and cover letter.
 - **Reliable with smaller models:** deterministic preflight, evidence mapping, and quality gates prevent silent skips.
@@ -27,7 +35,7 @@ and how to tailor the application without giving up final control.
 ## Quick start
 
 ```bash
-git clone https://github.com/gooogleflfa13-a11y/jobsflow.git
+git clone https://github.com/mixxmax/jobsflow.git
 cd jobsflow
 PYTHON_BIN="$(command -v python3.12 || command -v python3.11 || command -v python3)"
 "$PYTHON_BIN" -c 'import sys; assert sys.version_info >= (3, 10), "JobsFlow requires Python 3.10+"'
