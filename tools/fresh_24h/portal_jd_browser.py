@@ -6,21 +6,28 @@ Solves the "no reliable JD body from portal APIs" gap for two-pass scoring.
 Design:
   - Headless Chromium by default; optional channel=chrome / storage_state
   - Only used after pass-1 gate (callers decide)
-  - Fail soft: return ok=False + fail_reason (waf|empty|timeout|error)
+  - Fail soft: return ok=False + stable fail_reason (waf|timeout|empty|error|blocked)
+  - Retry WAF/timeout/empty failures with a bounded delay; reuse private storage state
+  - Successful bodies are written to the shared URL-keyed JD cache
   - Does NOT auto-apply or auto-tailor
 
 Usage:
   python3 tools/fresh_24h/portal_jd_browser.py --url 'https://hk.jobsdb.com/job/93633598'
   python3 tools/fresh_24h/portal_jd_browser.py --url '…' --out /tmp/jd.md
+  python3 tools/fresh_24h/portal_jd_browser.py --url '…' --headed \
+    --save-storage-state ~/.config/jobsearch/storage_state_jobsdb.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -96,6 +103,9 @@ class JdFetchResult:
     selector: str | None = None
     title: str = ""
     chars: int = 0
+    attempts: int = 1
+    last_reason: str | None = None
+    retried: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -122,6 +132,50 @@ def _clean_text(text: str) -> str:
 def _looks_like_waf(title: str, body: str, html_snip: str) -> bool:
     blob = f"{title}\n{body[:2000]}\n{html_snip[:1500]}".lower()
     return any(m in blob for m in WAF_MARKERS)
+
+
+RETRYABLE_REASONS = {"waf", "timeout", "empty"}
+FAIL_REASONS = {"waf", "timeout", "empty", "error", "blocked"}
+
+
+def _stable_fail_reason(reason: str | None) -> str:
+    """Normalize internal Playwright errors to the public failure contract."""
+    value = (reason or "error").strip().lower()
+    if value in FAIL_REASONS:
+        return value
+    if "waf" in value or "captcha" in value or "verify" in value:
+        return "waf"
+    if "timeout" in value:
+        return "timeout"
+    if "empty" in value:
+        return "empty"
+    if "blocked" in value or "access denied" in value:
+        return "blocked"
+    return "error"
+
+
+def default_storage_state_path(portal: str) -> Path:
+    """Return the private, portal-specific default cookie state path."""
+    safe_portal = portal if portal in {"jobsdb", "ctgoodjobs", "linkedin"} else "generic"
+    return Path.home() / ".config" / "jobsearch" / f"storage_state_{safe_portal}.json"
+
+
+def resolve_storage_state(storage_state: str | Path | None, portal: str) -> Path | None:
+    """Resolve explicit/env/default state, silently ignoring missing files."""
+    raw = storage_state or os.environ.get("PORTAL_JD_STORAGE_STATE")
+    path = Path(raw).expanduser() if raw else default_storage_state_path(portal)
+    return path if path.is_file() else None
+
+
+def _safe_storage_path(path: str | Path) -> Path:
+    """Ensure sensitive cookie state stays under the user's home directory."""
+    resolved = Path(path).expanduser().resolve()
+    home = Path.home().resolve()
+    try:
+        resolved.relative_to(home)
+    except ValueError as exc:
+        raise ValueError("storage state path must be inside the user home directory") from exc
+    return resolved
 
 
 def _largest_block(page) -> tuple[str, str]:
@@ -153,7 +207,7 @@ def _largest_block(page) -> tuple[str, str]:
     return _clean_text(best.get("t") or ""), str(best.get("sel") or "heuristic")
 
 
-def fetch_jd_body(
+def _fetch_jd_body_once(
     url: str,
     *,
     headless: bool = True,
@@ -161,8 +215,9 @@ def fetch_jd_body(
     storage_state: str | Path | None = None,
     channel: str | None = None,
     max_chars: int = MAX_CHARS,
+    save_storage_state: str | Path | None = None,
 ) -> JdFetchResult:
-    """Open job URL in Playwright and extract description text."""
+    """Open job URL once in Playwright and extract description text."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -170,16 +225,16 @@ def fetch_jd_body(
             ok=False,
             url=url,
             portal=detect_portal(url),
-            fail_reason=f"playwright_import: {e}",
+            fail_reason="error",
         )
 
     raw = (url or "").strip()
     portal = detect_portal(raw)
     canon = normalize_job_url(raw, source=portal if portal != "generic" else "")
     if not canon:
-        return JdFetchResult(ok=False, url=raw, portal=portal, fail_reason="empty_url")
+        return JdFetchResult(ok=False, url=raw, portal=portal, fail_reason="empty")
 
-    state = storage_state or os.environ.get("PORTAL_JD_STORAGE_STATE")
+    state = resolve_storage_state(storage_state, portal)
     # Prefer system Chrome on macOS — better CF pass-rate than stock chromium
     channel = channel or os.environ.get("PORTAL_JD_CHANNEL") or "chrome"
 
@@ -205,7 +260,7 @@ def fetch_jd_body(
                     ok=False,
                     url=canon,
                     portal=portal,
-                    fail_reason=f"launch: {e}",
+                    fail_reason="error",
                 )
 
             ctx_kwargs: dict[str, Any] = {
@@ -217,10 +272,24 @@ def fetch_jd_body(
                     "Chrome/122.0.0.0 Safari/537.36"
                 ),
             }
-            if state and Path(state).expanduser().exists():
+            if state and Path(state).expanduser().is_file():
                 ctx_kwargs["storage_state"] = str(Path(state).expanduser())
 
             context = browser.new_context(**ctx_kwargs)
+
+            save_path = _safe_storage_path(save_storage_state) if save_storage_state else None
+
+            def _save_context_state() -> None:
+                if save_path is None:
+                    return
+                try:
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    context.storage_state(path=str(save_path))
+                except Exception:
+                    # A cookie-save failure must not turn a valid JD into a
+                    # fetch failure; the next run can still use the result.
+                    pass
+
             # JD extraction is text-only: avoid downloading heavy assets.
             context.route(
                 "**/*",
@@ -234,9 +303,23 @@ def fetch_jd_body(
             try:
                 page.goto(canon, wait_until="domcontentloaded", timeout=timeout_ms)
                 # Cloudflare / WAF interstitial often needs a few seconds
+                interactive_verification = (
+                    not headless and save_path is not None and sys.stdin.isatty()
+                )
+                if interactive_verification:
+                    print(
+                        "提示：浏览器若显示人机验证，请在窗口中完成；"
+                        "验证后页面会自动继续并保存会话。",
+                        file=sys.stderr,
+                    )
+                wait_default = "120" if interactive_verification else "10"
+                wait_cap = 120 if interactive_verification else 15
                 waf_wait_seconds = min(
-                    15,
-                    max(0, int(os.environ.get("PORTAL_JD_WAF_WAIT_SECONDS", "10"))),
+                    wait_cap,
+                    max(
+                        0,
+                        int(os.environ.get("PORTAL_JD_WAF_WAIT_SECONDS", wait_default)),
+                    ),
                 )
                 for _ in range(waf_wait_seconds):
                     title0 = (page.title() or "").lower()
@@ -303,6 +386,7 @@ def fetch_jd_body(
                 if len(text) < MIN_BODY_CHARS and _looks_like_waf(
                     title, text or body_all, html_snip
                 ):
+                    _save_context_state()
                     browser.close()
                     return JdFetchResult(
                         ok=False,
@@ -329,6 +413,7 @@ def fetch_jd_body(
                 if len(text) > max_chars:
                     text = text[:max_chars] + "\n…"
 
+                _save_context_state()
                 browser.close()
                 return JdFetchResult(
                     ok=True,
@@ -345,14 +430,123 @@ def fetch_jd_body(
                 except Exception:
                     pass
                 msg = str(e).lower()
-                reason = "timeout" if "timeout" in msg else f"error: {e}"
+                reason = "timeout" if "timeout" in msg else "error"
                 return JdFetchResult(
                     ok=False, url=canon, portal=portal, fail_reason=reason
                 )
     except Exception as e:
         return JdFetchResult(
-            ok=False, url=canon, portal=portal, fail_reason=f"playwright: {e}"
+            ok=False, url=canon, portal=portal, fail_reason="error"
         )
+
+
+def _default_cache_root() -> Path:
+    configured = os.environ.get("JOBSEARCH_ROOT")
+    return Path(configured).expanduser() if configured else REPO
+
+
+def _write_success_cache(result: JdFetchResult, root: Path | None) -> None:
+    if not result.ok or not result.text or root is None:
+        return
+    try:
+        from tools.fresh_24h.jd_cache import save_jd_cache
+
+        save_jd_cache(
+            result.url,
+            result.text,
+            source=f"browser_{result.portal}",
+            root=Path(root),
+        )
+    except (OSError, ValueError, TypeError, ImportError):
+        # Cache failure must not discard a successfully fetched JD.
+        pass
+
+
+def fetch_jd_body(
+    url: str,
+    *,
+    headless: bool = True,
+    timeout_ms: int = 45000,
+    storage_state: str | Path | None = None,
+    channel: str | None = None,
+    max_chars: int = MAX_CHARS,
+    retry: int = 2,
+    retry_delay: float = 30.0,
+    save_storage_state: str | Path | None = None,
+    cache_root: Path | None = None,
+) -> JdFetchResult:
+    """Fetch a JD with bounded retries, session reuse and shared caching."""
+    raw = (url or "").strip()
+    portal = detect_portal(raw)
+    try:
+        retry = int(retry)
+        retry_delay = float(retry_delay)
+        timeout_ms = int(timeout_ms)
+        if (
+            retry < 0
+            or not math.isfinite(retry_delay)
+            or retry_delay < 0
+            or timeout_ms <= 0
+        ):
+            raise ValueError
+        # Keep each browser attempt bounded even when a caller supplies a
+        # larger value; the retry budget remains explicit and observable.
+        timeout_ms = min(timeout_ms, 60000)
+        save_path = _safe_storage_path(save_storage_state) if save_storage_state else None
+    except (TypeError, ValueError, OSError):
+        return JdFetchResult(
+            ok=False,
+            url=raw,
+            portal=portal,
+            fail_reason="error",
+            attempts=0,
+            last_reason="error",
+        )
+
+    last_reason: str | None = None
+    total = retry + 1
+    for index in range(total):
+        result = _fetch_jd_body_once(
+            raw,
+            headless=headless,
+            timeout_ms=timeout_ms,
+            storage_state=storage_state,
+            channel=channel,
+            max_chars=max_chars,
+            save_storage_state=save_path,
+        )
+        if result.ok:
+            result.attempts = index + 1
+            result.retried = int(index > 0)
+            result.last_reason = last_reason
+            _write_success_cache(result, cache_root or _default_cache_root())
+            return result
+
+        reason = _stable_fail_reason(result.fail_reason)
+        result.fail_reason = reason
+        last_reason = reason
+        if reason not in RETRYABLE_REASONS or index >= retry:
+            result.attempts = index + 1
+            result.retried = int(index > 0)
+            result.last_reason = reason
+            return result
+
+        delay = retry_delay
+        if delay > 0:
+            delay = max(0.0, delay + random.uniform(-5.0, 5.0))
+            time.sleep(delay)
+
+    # The loop always returns, but keep a stable soft-failure fallback for
+    # defensive callers or future changes.
+    return JdFetchResult(
+        ok=False,
+        url=raw,
+        portal=portal,
+        fail_reason="error",
+        attempts=total,
+        last_reason="error",
+        retried=int(total > 1),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -367,7 +561,30 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Path to storage_state.json (cookies)",
     )
-    ap.add_argument("--timeout-ms", type=int, default=45000)
+    ap.add_argument(
+        "--save-storage-state",
+        type=Path,
+        default=None,
+        help="Save cookies/localStorage after success or WAF (must be under home)",
+    )
+    ap.add_argument(
+        "--timeout-ms",
+        type=int,
+        default=45000,
+        help="Per-attempt timeout in ms (capped at 60000)",
+    )
+    ap.add_argument(
+        "--retry",
+        type=int,
+        default=2,
+        help="Retry waf/timeout/empty failures (default 2; 0 disables retries)",
+    )
+    ap.add_argument(
+        "--retry-delay",
+        type=float,
+        default=30.0,
+        help="Seconds between retries; ±5s jitter when greater than zero",
+    )
     ap.add_argument("--json", action="store_true", help="Print full JSON result")
     args = ap.parse_args(argv)
 
@@ -377,6 +594,10 @@ def main(argv: list[str] | None = None) -> int:
         timeout_ms=args.timeout_ms,
         storage_state=args.storage_state,
         channel=args.channel,
+        retry=args.retry,
+        retry_delay=args.retry_delay,
+        save_storage_state=args.save_storage_state,
+        cache_root=_default_cache_root(),
     )
     if args.json:
         print(json.dumps(res.to_dict(), ensure_ascii=False, indent=2))
@@ -391,6 +612,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"… ({res.chars} chars total)")
         else:
             print(res.text[:400] if res.text else "")
+            if res.fail_reason == "waf":
+                print(
+                    "提示：如持续被拦截，请使用 --headed --save-storage-state "
+                    "<path> 完成一次人工验证后重试。"
+                )
 
     if args.out and res.ok:
         args.out = args.out.expanduser().resolve()

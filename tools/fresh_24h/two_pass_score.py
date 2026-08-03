@@ -335,7 +335,7 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
                 }
                 return h.get("teaser") or "", "teaser"
 
-        fres = fetch_jd_body(url)
+        fres = fetch_jd_body(url, cache_root=repo)
         if fres.ok and fres.text:
             h["_enrich"] = {
                 "mode": "browser",
@@ -343,6 +343,9 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
                 "portal": fres.portal,
                 "selector": fres.selector,
                 "desc_len": fres.chars,
+                "attempts": fres.attempts,
+                "retried": fres.retried,
+                "last_reason": fres.last_reason,
             }
             h["teaser"] = fres.text[:3000]
             h["_deep_jd_full"] = fres.text
@@ -360,6 +363,9 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
             "ok": False,
             "portal": getattr(fres, "portal", None),
             "fail_reason": getattr(fres, "fail_reason", None),
+            "attempts": getattr(fres, "attempts", None),
+            "retried": getattr(fres, "retried", None),
+            "last_reason": getattr(fres, "last_reason", None),
             "url": url,
         }
         return h.get("teaser") or "", "teaser_fallback"

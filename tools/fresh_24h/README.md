@@ -53,6 +53,16 @@ meet the gate, then scores again. Cache and structured retrieval precede a
 time-budgeted browser fallback. Each row records pass-1, pass-2 and actual JD
 depth; shallow text is never labeled as a full JD.
 
+### Reliable detail fetch
+
+The Playwright detail fallback retries `waf`, `timeout` and `empty` failures
+twice by default (`--retry 0` disables retries; `--retry-delay` controls the
+interval). It reuses the private portal-specific state at
+`~/.config/jobsearch/storage_state_<portal>.json` when present. For a first-time
+human verification, use `--headed --save-storage-state <path>`; keep that cookie
+file under the user home directory and out of the repository. Successful CLI
+fetches write the same URL-keyed JD cache used by two-pass scoring.
+
 ## Rules
 
 - Search filters and hard rejects must come from the private configuration.

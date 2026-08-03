@@ -282,7 +282,7 @@ def enrich_package(package: Path, root: Path, repo: Path = REPO) -> list[str]:
         try:
             from tools.fresh_24h.portal_jd_browser import fetch_jd_body  # type: ignore
 
-            fres = fetch_jd_body(canon)
+            fres = fetch_jd_body(canon, cache_root=repo)
             if fres.ok and fres.text and len(fres.text) > 200:
                 write_jd(
                     root,

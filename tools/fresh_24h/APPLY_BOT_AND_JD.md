@@ -36,7 +36,11 @@ python3 tools/fresh_24h/portal_jd_browser.py --url 'https://hk.jobsdb.com/job/�
 Wired into `two_pass_score.deep_enrich_hit` for JobsDB / CT / LinkedIn fallback when CLI detail fails.
 
 - Env `PORTAL_JD_BROWSER=0` disables browser deep.
-- Env `PORTAL_JD_STORAGE_STATE=~/.config/jobsearch/storage_state.json` for cookies.
+- Env `PORTAL_JD_STORAGE_STATE=~/.config/jobsearch/storage_state_<portal>.json` for cookies;
+  the browser also checks the portal-specific default path automatically.
+- If a detail page shows WAF verification, use `--headed --save-storage-state <path>`
+  once for manual verification; the saved state is reused and must remain under the
+  user home directory.
 - Env `PORTAL_JD_CHANNEL=chrome` to use system Chrome channel.
 
 ## Extends to JobsDB + CTgoodjobs?
@@ -92,4 +96,3 @@ Grok：`~/.grok/config.toml` 已配 `npx apply-bot-mcp run-mcp-server --extensio
 
 效果：Agent 可操作**你已打开/已登录的 Chrome**（LinkedIn 登录态可用）。  
 日常 two-pass 入表**不依赖** extension；JobsDB 仍用脚本 Playwright，CT 仍用短摘要。
-

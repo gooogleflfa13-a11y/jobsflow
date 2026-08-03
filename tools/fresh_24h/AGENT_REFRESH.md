@@ -48,6 +48,32 @@ runs must not advance the cursor. Use `--no-record` for previews and debugging.
 Use a full JD for materials. If a portal remains shallow, mark `paste_needed` and
 ask for pasted text instead of fabricating requirements.
 
+## 首次使用：门户会话复用
+
+JobsDB、CTgoodjobs 和 LinkedIn 详情页默认使用无头 Chrome，并会尝试读取：
+
+```text
+~/.config/jobsearch/storage_state_<portal>.json
+```
+
+如果首次抓取遇到人机验证，请在用户明确允许的情况下运行：
+
+```bash
+python3 tools/fresh_24h/portal_jd_browser.py \
+  --url '<job-detail-url>' \
+  --headed \
+  --save-storage-state ~/.config/jobsearch/storage_state_jobsdb.json
+```
+
+在浏览器窗口中人工完成一次验证后关闭窗口；后续抓取会复用该会话。可用
+`--storage-state` 或 `PORTAL_JD_STORAGE_STATE` 覆盖读取路径，`--channel` 或
+`PORTAL_JD_CHANNEL` 覆盖浏览器通道。Cookie/session 文件属于敏感数据，必须放在
+用户主目录下，禁止写入仓库、CSV、日志或报告。
+
+详情页默认对 `waf`、`timeout`、`empty` 失败自动重试 2 次；可用
+`--retry 0` 关闭，或用 `--retry-delay` 调整间隔。成功抓取会自动写入
+`02_Tracker/jds/cache/<sha256(url)[:16]>.json`，`--out` 仍可同时生成 Markdown。
+
 ## Batch and identifiers
 
 `JobSearch_2026/02_Tracker/fresh_refresh_state.json` stores the last successful
