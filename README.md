@@ -12,7 +12,7 @@
 
 把岗位检索、公司研究、JD 分析、定制简历、Cover Letter 和投递确认连成一条线。
 
-JobsFlow 不是“帮你写一份简历”的工具，而是一个**帮你判断该不该投、为什么适合、如何针对性投递**的本地优先求职执行系统。
+JobsFlow 不是“帮你写一份简历”的工具，而是一个**帮你搜岗位，做材料，整理投递信息**的本地优先求职执行系统。
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-0.7.0-1F4E79?style=flat-square">
