@@ -128,7 +128,13 @@ python3 -m tools.job_materials pipeline \
   ```
   `complete` 写入 `semantic_matches/done/<key>.json`，删除 pending。
 - **回填**：重跑评分（`two_pass_score.py` 或 `push_to_gsheet.py`）时读取 done 里的 `resume_match` 覆盖词频分，并在 reason 中标注「语义简历匹配(letter)：...」。
-- **兜底**：无 done 文件时回退到词频分（`semantic_note` 留空）。
+- **状态可见**：输出列 `语义匹配来源` 会标记 `done`、`pending_fallback`、
+  `keyword_fallback` 或 `not_applicable`，并同时记录 `语义待处理数` 与任务键。
+- **保守兜底**：无 done 文件时可以在扫描预览中使用关键词分，但标记为
+  `pending_fallback`，默认上限为 4.0，不再伪装成已完成的 5.0 语义判断。
+- **推送闸门**：正式 `push_to_gsheet.py`（包括 `--local-only`）默认拒绝含
+  pending 任务的行；先执行 `list → show → complete` 并重跑评分。只有明确的
+  `--allow-pending-semantic` 诊断覆盖才会继续入表。
 - **画像分层**：`facts_anchor` 是可作为经历陈述的事实基线；`capability_upper` 只能用于可迁移潜力判断，不能写成已做过的实操经验。
 - **上沿校准**：`/setup` 会询问低（保守）/中（平衡）/高（扩展）。该选择只改变语义迁移的范围和确定性分数上限，不会解除事实、资格或禁止声称守卫。
 - **画像固定**：画像不随单个职位变化，agent 只负责「画像 ↔ JD」的比较匹配，替代原关键词匹配。

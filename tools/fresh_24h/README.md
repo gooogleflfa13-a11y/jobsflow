@@ -40,6 +40,11 @@ This merges scored rows into the main local
 `JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.csv`, including batch and
 status fields. Google Sheets remains an optional sync destination.
 
+Deep rows expose `语义匹配来源`, `语义待处理数` and pending task keys. A scan
+preview may show a conservatively capped `pending_fallback`, but formal push
+blocks until those tasks are completed and the score is rerun. Use
+`--allow-pending-semantic` only for an explicitly marked diagnostic push.
+
 `temp` scans only since the last successful refresh; `daily` scans about 24
 hours. Add `--no-record` to preview without changing state.
 

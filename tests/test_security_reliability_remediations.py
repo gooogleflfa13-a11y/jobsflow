@@ -4,6 +4,7 @@ from pathlib import Path
 from tools.fresh_24h import two_pass_score
 from tools.fresh_24h.fresh_24h_scan import should_record_refresh
 from tools.fresh_24h.push_to_gsheet import (
+    _reject_pending_semantic,
     neutralize_spreadsheet_formula,
     replace_sheet_values_safely,
 )
@@ -51,6 +52,19 @@ def test_failed_scan_does_not_advance_refresh_cursor():
     assert should_record_refresh([], new_count=0) is True
     assert should_record_refresh([{"portal": "jobsdb", "error": "timeout"}], new_count=2) is True
     assert should_record_refresh([{"portal": "jobsdb", "error": "timeout"}], new_count=0) is False
+
+
+def test_formal_push_blocks_pending_semantic_rows_by_default():
+    rows = [
+        {
+            "语义匹配来源": "pending_fallback",
+            "语义待处理数": "1",
+            "语义待处理任务": "semantic_resume_match:abc123",
+        }
+    ]
+
+    assert _reject_pending_semantic(rows, allow=False, context="test push") is True
+    assert _reject_pending_semantic(rows, allow=True, context="test push") is False
 
 
 def test_two_pass_hard_drops_below_final_by_default(monkeypatch, tmp_path):

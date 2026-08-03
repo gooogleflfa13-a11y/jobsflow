@@ -60,6 +60,35 @@ PASS_EXTRA = [
 ]
 
 
+def pending_semantic_rows(rows: list[dict]) -> list[dict]:
+    """Return rows whose deep score still depends on pending semantic work.
+
+    The score CSV remains useful as a preview, but formal push callers use
+    this helper as a gate so a keyword fallback cannot silently become a
+    tracker result.
+    """
+    pending = []
+    for row in rows:
+        try:
+            count = int(str(row.get("语义待处理数") or "0"))
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0 or str(row.get("语义匹配来源") or "").strip() == "pending_fallback":
+            pending.append(row)
+    return pending
+
+
+def pending_semantic_tasks(rows: list[dict]) -> list[str]:
+    """Collect unique task identifiers for a user-facing push error."""
+    tasks: list[str] = []
+    for row in pending_semantic_rows(rows):
+        for task in str(row.get("语义待处理任务") or "").split(";"):
+            task = task.strip()
+            if task and task not in tasks:
+                tasks.append(task)
+    return tasks
+
+
 def hkt_day() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
 
@@ -143,6 +172,32 @@ def local_id_baseline(tracker: Path) -> dict[str, int]:
         except OSError:
             continue
     return max_prefix_from_ids(ids)
+
+
+def local_id_map(tracker: Path) -> dict[str, str]:
+    """Return canonical URL → existing job ID mappings from local trackers."""
+    paths = []
+    apply_lists = sorted(tracker.glob("hk_apply_list_*.csv"), reverse=True)
+    if apply_lists:
+        paths.append(apply_lists[0])
+    paths.extend(sorted(tracker.glob("*_twopass_scored.csv"), reverse=True))
+    paths.extend(sorted(tracker.glob("fresh_24h_*_scored.csv"), reverse=True))
+    mapping: dict[str, str] = {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            with path.open(encoding="utf-8-sig", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    jid = str(row.get("岗位编号") or "").strip()
+                    url = str(row.get("链接") or row.get("url") or "").strip()
+                    if not jid or not url:
+                        continue
+                    canonical = normalize_job_url(url, source=row.get("来源") or "") or url
+                    mapping.setdefault(canonical, jid)
+        except OSError:
+            continue
+    return mapping
 
 
 def score_hit(
@@ -347,6 +402,8 @@ def run_two_pass(
         "final_kept": 0,
         "dropped_final": [],
         "pass1_drop_samples": [],
+        "semantic_pending_rows": 0,
+        "semantic_pending_tasks": [],
     }
 
     gated: list[tuple[dict, Any]] = []
@@ -443,6 +500,9 @@ def run_two_pass(
     draft_rows.sort(
         key=lambda r: -float(r.get("深评分数") or r.get("CareerOps分数") or 0)
     )
+    pending_rows = pending_semantic_rows(draft_rows)
+    meta["semantic_pending_rows"] = len(pending_rows)
+    meta["semantic_pending_tasks"] = pending_semantic_tasks(draft_rows)
     return draft_rows, meta
 
 
@@ -550,7 +610,7 @@ def main(argv: list[str] | None = None) -> int:
         drop_below_final=not args.keep_below_final,
     )
     baseline = local_id_baseline(tracker)
-    allocate_ids(rows, baseline_max=baseline)
+    allocate_ids(rows, baseline_max=baseline, existing_ids=local_id_map(tracker))
     # After ID alloc (which sets 层级 from score), flag pass-2 soft drops for review
     for r in rows:
         if r.pop("_below_final", False):
@@ -577,6 +637,11 @@ def main(argv: list[str] | None = None) -> int:
         f"final kept={meta['final_kept']} "
         f"pass2_below_min={n_below} (in_csv={args.keep_below_final}) → {out}"
     )
+    if meta.get("semantic_pending_rows"):
+        print(
+            f"WARNING: semantic pending rows={meta['semantic_pending_rows']} "
+            "— complete them and rerun before /push"
+        )
     print(f"meta → {meta_path}")
     if meta["dropped_final"][:5]:
         print("sample pass2 below-min:", meta["dropped_final"][:5])

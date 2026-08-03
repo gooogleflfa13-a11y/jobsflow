@@ -51,12 +51,31 @@ def allocate_ids(
     jobs: list[dict],
     *,
     baseline_max: dict[str, int],
+    existing_ids: dict[str, str] | None = None,
     letter_key: str = "简历版本",
     score_key: str = "CareerOps分数",
     grade_key: str = "CareerOps等级",
 ) -> list[dict]:
-    """Assign 岗位编号 + 层级 in place. jobs should already be score-sorted desc."""
+    """Assign 岗位编号 + 层级 in place.
+
+    ``existing_ids`` maps a stable job identity (normally the canonical URL)
+    to an already assigned ID. Those IDs are preserved on reruns; only rows
+    without a known identity receive a new sequence number. This prevents a
+    rescored job from looking like a brand-new application.
+    """
     counters = dict(baseline_max)
+    existing_ids = existing_ids or {}
+    used_ids: set[str] = set()
+    reserved_ids: set[str] = set()
+    for value in existing_ids.values():
+        parsed = parse_id(str(value))
+        if not parsed:
+            continue
+        reserved_ids.add(str(value).strip())
+        letter, digit, number = parsed
+        pref = f"{letter}{digit}"
+        counters[pref] = max(counters.get(pref, 0), number)
+
     for row in jobs:
         score = float(row.get(score_key) or 0)
         grade = str(row.get(grade_key) or "")
@@ -65,8 +84,19 @@ def allocate_ids(
         if letter not in "ABCDEFG":
             letter = "F"
         pref = f"{letter}{digit}"
-        counters[pref] = counters.get(pref, 0) + 1
-        row["岗位编号"] = f"{letter}{digit}-{counters[pref]:03d}"
+        identity = str(row.get("链接") or row.get("url") or "").strip()
+        prior_id = str(existing_ids.get(identity) or row.get("岗位编号") or "").strip()
+        if parse_id(prior_id) and prior_id not in used_ids:
+            row["岗位编号"] = prior_id
+            used_ids.add(prior_id)
+        else:
+            counters[pref] = counters.get(pref, 0) + 1
+            candidate = f"{letter}{digit}-{counters[pref]:03d}"
+            while candidate in reserved_ids or candidate in used_ids:
+                counters[pref] += 1
+                candidate = f"{letter}{digit}-{counters[pref]:03d}"
+            row["岗位编号"] = candidate
+            used_ids.add(candidate)
         row["层级"] = tier_name
         row["简历版本"] = letter
     return jobs

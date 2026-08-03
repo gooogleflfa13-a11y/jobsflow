@@ -100,8 +100,11 @@ Their actual queries and relevance rules are candidate- and profession-specific.
 - Hard rejection and keyword relevance must come from the private configuration,
   not a built-in profession.
 - Deep-JD resume matching may create a pending agent task. A completed verdict
-  must declare a direct, transferable, upper-only or none basis; missing verdicts
-  fall back to the deterministic keyword score.
+  must declare a direct, transferable, upper-only or none basis. Until it is
+  completed, the score is explicitly marked `pending_fallback`, capped at 4.0
+  by default, and the row records the pending task count. Formal `/push` is
+  blocked unless all semantic tasks are complete (or the user explicitly uses
+  the diagnostic `--allow-pending-semantic` override).
 - The URL-keyed JD cache is checked before every portal branch. A valid entry
   (default: 60 days, at least 100 non-whitespace characters) is reused with no
   network request. A successful deep retrieval is written immediately to

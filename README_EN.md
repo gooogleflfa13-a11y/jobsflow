@@ -84,8 +84,10 @@ then asks the agent executing the job-search task to compare that profile with
 the JD's core duties. During `/setup`, the user chooses a low (conservative),
 medium (balanced), or high (broader) upper-bound calibration. This only changes
 the permitted transfer range and deterministic score caps; no setting turns
-potential into claimed experience. If a semantic verdict is not completed, the
-keyword score remains the explicit fallback and scanning continues.
+potential into claimed experience. If a semantic verdict is not completed, a
+ scan preview may keep a visibly marked `pending_fallback` keyword score capped
+ at 4.0 by default; formal `/push` blocks that row until the task is completed
+ and scoring is rerun.
 
 ### Three model intervention points, with deterministic work around them
 
@@ -119,8 +121,9 @@ Every deep pass: check URL cache first (hit = zero network requests) │
 The position-profile and resume-match tasks consume the JD fetched during the
 scan; they do not reopen a portal. Models with less reasoning capacity can run
 the explicit `list → show → complete` task contract. If a task is unfinished,
-the lane and keyword score remain deterministic fallbacks, so a scan does not
-break or silently claim a deep semantic verdict.
+the lane and keyword score remain deterministic fallbacks for preview only,
+with source and pending count recorded; the formal push gate prevents them from
+being silently treated as completed semantic results.
 
 ### Energy-saving controls
 

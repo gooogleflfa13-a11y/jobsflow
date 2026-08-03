@@ -54,7 +54,12 @@ from linkedin_enrich import (  # noqa: E402
     enrich_hits_shallow,
     is_linkedin_url,
 )
-from two_pass_score import PASS_EXTRA, run_two_pass  # noqa: E402
+from two_pass_score import (  # noqa: E402
+    PASS_EXTRA,
+    pending_semantic_rows,
+    pending_semantic_tasks,
+    run_two_pass,
+)
 from tools.job_urls import normalize_job_url  # noqa: E402
 from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
 from tools.fresh_24h.tracker_schema import merge_tracker_headers  # noqa: E402
@@ -68,6 +73,41 @@ from tools.spreadsheet_safety import neutralize_spreadsheet_formula  # noqa: E40
 
 # Headers we always keep on merge read/write (base + two-pass extras).
 _KEEP_COLS = list(SHEET_HEADERS) + [c for c in PASS_EXTRA if c not in SHEET_HEADERS]
+
+
+def _reject_pending_semantic(
+    rows: list[dict],
+    *,
+    allow: bool,
+    context: str,
+) -> bool:
+    """Gate formal pushes until deep semantic tasks have been completed."""
+    pending = pending_semantic_rows(rows)
+    if not pending:
+        return False
+    tasks = pending_semantic_tasks(rows)
+    if allow:
+        print(
+            f"WARNING: {context} includes {len(pending)} row(s) with pending "
+            "semantic tasks because --allow-pending-semantic was supplied",
+            file=sys.stderr,
+        )
+        if tasks:
+            print("  tasks: " + ", ".join(tasks[:20]), file=sys.stderr)
+        return False
+    print(
+        f"ERROR: {context} blocked: {len(pending)} row(s) still have pending "
+        "semantic tasks. Complete them and rerun scoring before pushing.",
+        file=sys.stderr,
+    )
+    if tasks:
+        print("  tasks: " + ", ".join(tasks[:20]), file=sys.stderr)
+    print(
+        "  use semantic_match_agent.py list/show/complete, then rerun; "
+        "use --allow-pending-semantic only for an explicitly marked diagnostic push",
+        file=sys.stderr,
+    )
+    return True
 
 
 def replace_sheet_values_safely(
@@ -529,11 +569,18 @@ def push_local_only(
     enrich_sleep: float,
     mode: str,
     legacy_single_pass: bool,
+    allow_pending_semantic: bool,
 ) -> int:
     """Score and merge a selection into the local main CSV without Sheets."""
     tracker_path = latest_tracker_path(REPO, SHEET_HEADERS)
     _, existing_rows = read_tracker(tracker_path)
     baseline = max_prefix_from_ids([row.get("岗位编号") or "" for row in existing_rows])
+    existing_id_map = {
+        normalize_job_url(row.get("链接") or "", source=row.get("来源") or "")
+        or str(row.get("链接") or "").strip(): str(row.get("岗位编号") or "").strip()
+        for row in existing_rows
+        if row.get("链接") and row.get("岗位编号")
+    }
     existing_urls = {
         normalize_job_url(row.get("链接") or "", source=row.get("来源") or "")
         for row in existing_rows
@@ -565,7 +612,13 @@ def push_local_only(
             sleep_s=enrich_sleep,
             max_deep=max_deep,
         )
-        allocate_ids(rows, baseline_max=baseline)
+        if _reject_pending_semantic(
+            rows,
+            allow=allow_pending_semantic,
+            context="local-only push",
+        ):
+            return 2
+        allocate_ids(rows, baseline_max=baseline, existing_ids=existing_id_map)
         _persist_deep_jds(rows, REPO)
 
     path, added = merge_scored_rows(
@@ -604,6 +657,11 @@ def main(argv: list[str] | None = None) -> int:
         "--local-only",
         action="store_true",
         help="Score and update the local main CSV without Google Sheets credentials",
+    )
+    ap.add_argument(
+        "--allow-pending-semantic",
+        action="store_true",
+        help="Diagnostic override: allow rows with pending semantic tasks into the push output",
     )
     ap.add_argument(
         "--min-score",
@@ -699,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
             enrich_sleep=args.enrich_sleep,
             mode=args.mode,
             legacy_single_pass=not use_two_pass,
+            allow_pending_semantic=args.allow_pending_semantic,
         )
 
     cred = args.credentials or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -746,15 +805,13 @@ def main(argv: list[str] | None = None) -> int:
     elif ws is not None and not merge:
         existing_rows = []
     elif ws is None:
-        ws = sh.add_worksheet(
-            title=title,
-            rows=100,
-            cols=max(len(SHEET_HEADERS) + len(PASS_EXTRA) + 2, 30),
-        )
-        print(f"created tab: {title}")
+        # Create the worksheet only after scoring gates pass. A blocked
+        # semantic push must not leave an empty tab behind.
+        ws = None
 
     # Normalize existing sheet URLs for dedup (and write-back so sheet stays canonical)
     existing_urls: set[str] = set()
+    existing_id_map: dict[str, str] = {}
     for r in existing_rows:
         raw = (r.get("链接") or "").strip()
         if not raw:
@@ -765,6 +822,8 @@ def main(argv: list[str] | None = None) -> int:
             existing_urls.add(canon)
         else:
             existing_urls.add(raw)
+        if r.get("岗位编号"):
+            existing_id_map[canon or raw] = str(r.get("岗位编号") or "").strip()
 
     # baseline from main tracker sheets + existing fresh IDs
     baseline = _baseline_max_from_gsheet(sheet_id, cred_path)
@@ -797,9 +856,15 @@ def main(argv: list[str] | None = None) -> int:
             sleep_s=args.enrich_sleep,
             max_deep=args.max_deep,
         )
+        if _reject_pending_semantic(
+            new_rows,
+            allow=args.allow_pending_semantic,
+            context="Google Sheets push",
+        ):
+            return 2
         # No extra filter on pass-2 results: show whatever run_two_pass returns
         # (including soft-kept below-min_final rows flagged with _below_final).
-        allocate_ids(new_rows, baseline_max=baseline)
+        allocate_ids(new_rows, baseline_max=baseline, existing_ids=existing_id_map)
         for r in new_rows:
             if r.pop("_below_final", False):
                 r["层级"] = "待审-深评偏低"
@@ -828,6 +893,14 @@ def main(argv: list[str] | None = None) -> int:
             repo=REPO,
         )
         score_meta = {"mode": "legacy_single_pass", **score_meta}
+
+    if ws is None:
+        ws = sh.add_worksheet(
+            title=title,
+            rows=100,
+            cols=max(len(SHEET_HEADERS) + len(PASS_EXTRA) + 2, 30),
+        )
+        print(f"created tab: {title}")
 
     batch_id = make_batch_id(args.mode)
     entered = hkt_now_str()

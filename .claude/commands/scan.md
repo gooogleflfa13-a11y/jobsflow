@@ -42,8 +42,10 @@ python3 tools/fresh_24h/semantic_match_agent.py complete <key> \
   --score 4.0 --basis transferable --note "与事实基线相邻且可迁移"
 ```
 
-完成后重新运行评分，才会把语义判断回填到 `resume` 维度。没有完成的任务不阻塞
-扫描，系统保留关键词评分作为明确兜底。
+完成后重新运行评分，才会把语义判断回填到 `resume` 维度。扫描预览可以保留
+明确标记的关键词回退，但结果会显示 `语义匹配来源=pending_fallback`、待处理数，
+且回退上限默认为 4.0。正式 `/push`（包括本地台账）在 pending 存在时会停止；
+只有显式传入 `--allow-pending-semantic` 才能进行诊断性覆盖。
 
 5. 问用户：「要推到 Google Sheets 吗？」（如果用户之前说「只看不进表」则跳过）
 

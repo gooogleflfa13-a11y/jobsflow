@@ -40,8 +40,10 @@ runs must not advance the cursor. Use `--no-record` for previews and debugging.
    returns lane + company brief; the latter labels each verdict as direct,
    transferable, upper_only or none. Both tasks consume the cached JD, and the
    profile calibration caps transferable/upper-only scores deterministically.
-7. Write local/Google tracker rows only when requested.
-8. Never create application materials during scan.
+7. Rerun scoring after completion. Inspect `语义匹配来源` and
+   `语义待处理数`; formal local/Google pushes stop when pending tasks remain.
+8. Write local/Google tracker rows only when requested.
+9. Never create application materials during scan.
 
 Use a full JD for materials. If a portal remains shallow, mark `paste_needed` and
 ask for pasted text instead of fabricating requirements.
@@ -64,7 +66,9 @@ do not invent placeholder ranges.
 - Do not reinterpret an unconfigured template as search intent.
 - Do not spend unbounded time on WAF, CAPTCHA or browser recovery.
 - A single-job “deep analysis” request uses `deep_analyze_job.py`, not a teaser.
-- A pending semantic task is an enhancement, not a failure; if it is not
-  completed, keep the keyword score and report the pending count.
+- A pending semantic task may remain visible in a scan preview, but it must be
+  labeled `pending_fallback` and capped conservatively. Never present it as a
+  completed semantic score; formal push requires completion unless the user
+  explicitly authorizes the diagnostic override.
 - Keep search, tracking, materials and submission as separate user-authorized
   stages.

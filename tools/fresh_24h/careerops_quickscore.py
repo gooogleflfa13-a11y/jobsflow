@@ -42,6 +42,9 @@ class ScoreResult:
     brief: str = ""  # 中文简述
     cap_notes: str = ""  # caps triggered, semicolon-joined
     semantic_note: str = ""  # LLM semantic-resume-match note / fallback flag
+    semantic_source: str = "not_applicable"  # not_applicable|done|pending_fallback|keyword_fallback
+    semantic_pending_count: int = 0
+    semantic_pending_tasks: tuple[str, ...] = ()
     company_brief_override: str = ""  # agent-generated 公司简介 (position-profile task)
 
 
@@ -298,10 +301,13 @@ def _semantic_resume_match(
     own semantic understanding, and writes back resume_match (1-5) + note.
 
     Returns:
-      - {"resume": score, "note": ...} when an already-completed verdict file
-        exists for this job (re-scoring after agent filled it in).
-      - None otherwise (caller falls back to keyword-hit score; the pending
-        request has been created for the agent to fill in).
+      - ``{"resume": score, "source": "done", ...}`` when an already-completed
+        verdict file exists for this job.
+      - ``{"source": "pending", ...}`` when the task is waiting for the agent.
+        The caller keeps a deterministic keyword score only as a visible,
+        conservative fallback until the task is completed.
+      - None when no verified capability base is available, so no semantic task
+        should be created.
     """
     jobsearch_root = _jobsearch_root(repo)
     jd_payload = jd_full or jd_text or ""
@@ -380,11 +386,21 @@ def _semantic_resume_match(
             return {
                 "resume": score,
                 "note": f"语义简历匹配({letter})[{basis}]：{note}",
+                "source": "done",
+                "pending_key": "",
             }
         except (OSError, ValueError, TypeError):
             pass
 
     # Otherwise emit a pending request for the executing agent to fill in.
+    pending_fallback_cap = 4.0
+    try:
+        pending_fallback_cap = min(
+            4.0,
+            max(1.0, float(semantic_profile.get("pending_fallback_cap") or 4.0)),
+        )
+    except (TypeError, ValueError):
+        pending_fallback_cap = 4.0
     try:
         pending_dir.mkdir(parents=True, exist_ok=True)
         pending = {
@@ -399,6 +415,7 @@ def _semantic_resume_match(
                 "upper_bound_level": level,
                 "upper_only_score_cap": upper_cap,
                 "transfer_score_cap": transfer_cap,
+                "pending_fallback_cap": pending_fallback_cap,
             },
             # This is the text already fetched by deep_enrich_hit.  It is a
             # bounded payload for weaker models, never a second portal fetch.
@@ -417,7 +434,20 @@ def _semantic_resume_match(
             pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
-    return None
+
+    # A valid capability base exists but no verdict does not count as a
+    # completed semantic result. Keep the deterministic score only as a
+    # visibly marked, conservative fallback until the task is completed.
+    return {
+        "resume": None,
+        "note": (
+            f"语义简历匹配({letter})待处理：当前为关键词回退，"
+            f"回退上限{pending_fallback_cap:.1f}"
+        ),
+        "source": "pending",
+        "pending_key": f"semantic_resume_match:{key}",
+        "fallback_cap": pending_fallback_cap,
+    }
 
 
 def _semantic_task_key(title: str, company: str) -> str:
@@ -444,8 +474,9 @@ def _semantic_position_profile(
       - what the role's scope is (job function), and produces two outputs:
         letter (A-G lane) + company_brief (one-line company intro for the sheet).
 
-    Returns {"letter", "company_brief", "note"} when a verdict exists, else None
-    (caller falls back to rule-based lane + rule-based company_brief).
+    Returns ``{"letter", "company_brief", "note"}`` when a verdict exists, or
+    a ``source=pending`` marker while the task awaits completion. The caller
+    falls back to the deterministic lane and company brief in the latter case.
     """
     track_mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
     lane_labels = {k: v for k, v in track_mapping.items() if k in "ABCDEFG"}
@@ -508,7 +539,10 @@ def _semantic_position_profile(
             pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
-    return None
+    return {
+        "source": "pending",
+        "pending_key": f"position_profile:{key}",
+    }
 
 
 def _jobsearch_root(repo: Path | None = None) -> Path:
@@ -667,6 +701,7 @@ def score_job(
 
     letter = rule_letter
     company_brief_override = ""
+    semantic_pending_tasks: list[str] = []
     if _is_deep_depth(jd_depth):
         pos = _semantic_position_profile(
             title=title,
@@ -679,8 +714,11 @@ def score_job(
             jd_cache_meta=jd_cache_meta,
         )
         if pos is not None:
-            letter = pos["letter"]
-            company_brief_override = pos.get("company_brief") or ""
+            if pos.get("source") == "pending":
+                semantic_pending_tasks.append(pos.get("pending_key") or "position_profile")
+            elif str(pos.get("letter") or "").upper() in "ABCDEFG":
+                letter = str(pos["letter"]).upper()
+                company_brief_override = pos.get("company_brief") or ""
     mapping = profile.get("track_mapping") if isinstance(profile.get("track_mapping"), dict) else {}
     track = str(mapping.get(letter) or f"Track {letter}")
 
@@ -689,6 +727,8 @@ def score_job(
     # JD's core duties, instead of naive keyword-hit counting. On failure falls
     # back to the keyword-hit score and flags it.
     semantic_note = None
+    semantic_source = "not_applicable"
+    semantic_cap_notes: list[str] = []
     if _is_deep_depth(jd_depth):
         sem = _semantic_resume_match(
             title=title,
@@ -701,8 +741,30 @@ def score_job(
             jd_cache_meta=jd_cache_meta,
         )
         if sem is not None:
-            resume = sem["resume"]
+            raw_semantic_source = str(sem.get("source") or "keyword_fallback")
+            semantic_source = (
+                "pending_fallback" if raw_semantic_source == "pending" else raw_semantic_source
+            )
+            if sem.get("resume") is not None:
+                resume = float(sem["resume"])
+            elif raw_semantic_source == "pending":
+                fallback_cap = float(sem.get("fallback_cap") or 4.0)
+                if resume > fallback_cap:
+                    resume = fallback_cap
+                semantic_cap_notes.append(f"语义简历匹配待处理，关键词回退上限{fallback_cap:.1f}")
+                if sem.get("pending_key"):
+                    semantic_pending_tasks.append(str(sem["pending_key"]))
             semantic_note = sem.get("note")
+        else:
+            semantic_source = "keyword_fallback"
+
+    semantic_pending_tasks = list(dict.fromkeys(semantic_pending_tasks))
+    semantic_pending_count = len(semantic_pending_tasks)
+    if semantic_pending_count:
+        if semantic_source != "not_applicable":
+            semantic_source = "pending_fallback"
+        pending_note = f"语义任务待处理{semantic_pending_count}项"
+        semantic_note = f"{semantic_note}；{pending_note}" if semantic_note else pending_note
 
     dims = {
         "resume": resume,
@@ -727,6 +789,7 @@ def score_job(
 
     cap = 5.0
     cap_notes: list[str] = []
+    cap_notes.extend(semantic_cap_notes)
     profile_health = profile.get("_profile_health")
     if isinstance(profile_health, dict) and profile_health.get("status") != "ready":
         cap = min(cap, 2.9)
@@ -806,6 +869,9 @@ def score_job(
         brief=brief,
         cap_notes="；".join(cap_notes),
         semantic_note=semantic_note or "",
+        semantic_source=semantic_source,
+        semantic_pending_count=semantic_pending_count,
+        semantic_pending_tasks=tuple(semantic_pending_tasks),
         company_brief_override=company_brief_override or "",
     )
 
@@ -866,6 +932,9 @@ SHEET_HEADERS = [
     "CareerOps等级",
     "CareerOps理由",
     "置信度",
+    "语义匹配来源",
+    "语义待处理数",
+    "语义待处理任务",
 ]
 
 
@@ -929,4 +998,7 @@ def build_tracker_row(
         sc.grade,
         sc.reason,
         sc.confidence,
+        sc.semantic_source,
+        str(sc.semantic_pending_count),
+        ";".join(sc.semantic_pending_tasks),
     ]

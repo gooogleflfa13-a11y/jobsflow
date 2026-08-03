@@ -11,6 +11,10 @@
 /push --local-only           # 不使用 Google Sheets，更新本地主 CSV
 ```
 
+深评若有未完成的语义任务，`/push` 和 `--local-only` 默认会停止，并列出任务键。
+先执行 `semantic_match_agent.py list/show/complete`，再重跑评分；只有明确的诊断场景
+才使用 `--allow-pending-semantic` 覆盖闸门。
+
 ## 执行步骤
 
 1. 推送：

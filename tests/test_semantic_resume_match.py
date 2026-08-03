@@ -70,13 +70,39 @@ def test_deep_score_creates_pending_but_teaser_does_not(tmp_path, monkeypatch):
         json.loads(path.read_text(encoding="utf-8"))
         for path in (tmp_path / "02_Tracker" / "semantic_matches" / "pending").glob("*.json")
     ]
-    assert deep.semantic_note == ""
+    assert deep.semantic_source == "pending_fallback"
+    assert deep.semantic_pending_count == 2
+    assert "待处理" in deep.semantic_note
+    assert "语义任务待处理2项" in deep.reason
     resume_tasks = [task for task in pending if task.get("task") == "semantic_resume_match"]
     assert len(resume_tasks) == 1
     task = resume_tasks[0]
     assert "事实基线" in task["profile"]
     assert "能力上沿" in task["profile"]
     assert task["semantic_profile"]["upper_bound_level"] == "low"
+
+
+def test_pending_semantic_fallback_is_capped_and_marked(tmp_path, monkeypatch):
+    _write_semantic_workspace(tmp_path, level="medium")
+    monkeypatch.setenv("JOBSEARCH_ROOT", str(tmp_path))
+    profile = _profile()
+    profile["evidence_keywords"] = [f"evidence-{i}" for i in range(12)]
+    teaser = "Develop and monitor " + " ".join(profile["evidence_keywords"])
+
+    result = score_job(
+        title="Operations Analyst",
+        company="Acme",
+        teaser=teaser,
+        track_hint="A",
+        jd_depth="deep",
+        profile=profile,
+    )
+
+    # The raw keyword score would reach 5.0, but an unfinished semantic task
+    # must never present that as a completed semantic judgement.
+    assert result.semantic_source == "pending_fallback"
+    assert "关键词回退上限4.0" in result.reason
+    assert "简历匹配4.0" in result.reason
 
 
 def test_completed_upper_only_verdict_obeys_calibration_cap(tmp_path, monkeypatch):
