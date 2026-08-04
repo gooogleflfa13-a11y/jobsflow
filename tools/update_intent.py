@@ -35,6 +35,7 @@ if __package__ in {None, ""}:
 
 from tools.io_utils import atomic_write_json
 from tools.profile_recovery import refresh_scoring_profile
+from tools.salary_parsing import AMBIGUOUS, INVALID, PARSED, parse_salary_range
 
 
 STATE_NAME = "intent_state.json"
@@ -156,13 +157,29 @@ def _extract_constraints(text: str) -> dict[str, Any]:
     """Extract only explicit, machine-checkable constraints from an update."""
     lowered = _clean_text(text).casefold()
     result: dict[str, Any] = {}
-    salary = re.search(
-        r"(?:minimum|min|at\s+least|最低|不少于|至少)\D{0,16}"
-        r"(?:hkd|hk\$|usd|rmb|cny|薪资|薪資)?\s*([\d,]{3,})",
-        lowered,
-    )
-    if salary:
-        result["minimum_salary"] = int(salary.group(1).replace(",", ""))
+    salary_marker = re.search(r"(?:minimum|min|at\s+least|最低|不少于|至少)", lowered)
+    if salary_marker:
+        # Keep the candidate phrase bounded so a later unrelated number (for
+        # example an experience requirement) cannot become a salary value.
+        salary_text = lowered[salary_marker.end() : salary_marker.end() + 80]
+        salary = parse_salary_range(salary_text)
+        if salary.status == PARSED and salary.low is not None:
+            result["minimum_salary"] = (
+                int(salary.low) if float(salary.low).is_integer() else salary.low
+            )
+            if salary.currency:
+                result["minimum_salary_currency"] = salary.currency
+            if salary.period:
+                result["minimum_salary_period"] = salary.period
+        elif salary.status in {AMBIGUOUS, INVALID}:
+            # Do not retain a stale previous minimum after the user explicitly
+            # changed it to a value that needs confirmation.  The preview shows
+            # the reason and the scorer remains neutral until it is clarified.
+            result["minimum_salary"] = None
+            result["minimum_salary_parse_status"] = salary.status
+            result["minimum_salary_parse_warning"] = (
+                salary.reason or "请补充币种或明确千位/小数分隔方式"
+            )
     years = re.search(
         r"(?:up\s+to|no\s+more\s+than|不超过|不超過|最多)\s*(\d+)\s*(?:years?|年)",
         lowered,
@@ -491,6 +508,19 @@ def main(argv: list[str] | None = None) -> int:
         print("已生成意向变更预览，尚未修改配置。")
         print(f"当前意向：{proposal['current_intent'] or '（未记录）'}")
         print(f"识别关键词：{', '.join(proposal['recognized_terms'])}")
+        constraints = (proposal.get("diff") or {}).get("constraints") or {}
+        if constraints.get("minimum_salary_parse_status") in {AMBIGUOUS, INVALID}:
+            print(
+                "薪资约束需要确认："
+                f"{constraints.get('minimum_salary_parse_warning') or '请补充币种或明确千位/小数分隔方式'}"
+            )
+        elif constraints.get("minimum_salary") is not None:
+            currency = constraints.get("minimum_salary_currency") or "未注明币种"
+            period = constraints.get("minimum_salary_period") or "未注明周期"
+            print(
+                f"识别最低薪资：{constraints['minimum_salary']}（{currency}，{period}）；"
+                "请在确认前核对。"
+            )
         print("请检查后运行：python3 tools/update_intent.py confirm")
         return 0
     except (RuntimeError, ValueError) as exc:

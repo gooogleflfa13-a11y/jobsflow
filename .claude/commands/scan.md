@@ -22,6 +22,13 @@
 
 2. 读取生成的 `_twopass_scored.csv` 和 `_run.json`
 
+   每个被评分的岗位还会在私有工作区生成一份版本化评估记录：
+   `JobSearch_2026/02_Tracker/job_assessments/<hash>.json`。其中保存初评/深评/最终分数、
+   结构化优势与待核对缺口，以及 JD/评分配置哈希；JD 或意向变更后会重新生成，不能沿用旧判断。
+   `/materials` 会读取同一记录来排序 CV 证据、约束 Cover Letter/邮件的共同证据；
+   `/interview` 用 `python3 -m tools.job_materials assessment show --job-id <JOB-ID>`
+   读取同一记录准备缺口问题，不会各自重新猜一个匹配结论。
+
 3. 向用户报告：
    - 扫到多少新职位，多少通过门槛 3.3
    - 多少拿到了 deep JD（LinkedIn 为主）

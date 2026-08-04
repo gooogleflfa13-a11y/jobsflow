@@ -81,6 +81,21 @@ The converter auto-detects the Excel layout:
 - Looks for a "Company"/"Firma" column and an optional "City"/"By" column
 - Treats remaining columns as salary data (auto-pairs count/index columns)
 
+### Localized number handling
+
+The converter accepts numeric strings commonly produced by European and Nordic
+exports, including `108,5`, `1.234,5`, `1,234.5`, and `1 234,5`. A bare
+single-separator value such as `1,234` is skipped when the source locale cannot
+distinguish a decimal comma from thousands grouping; this prevents a silent
+1000x error. The product's shared parser applies the same contract to portal
+salary labels and `/intent` minimum-salary constraints. An explicit currency,
+pay period, or two-value range (for example `HKD 28,000–32,000 monthly`) makes
+the grouping unambiguous. Otherwise the scorer leaves the pay dimension neutral
+and marks the value for confirmation. Salary labels also normalize amount
+suffixes (`k`/`K` = 1,000, `M` = 1,000,000, `B` = 1,000,000,000, plus Chinese
+`千`/`万`/`亿` units), and a hyphen between two amounts is treated as a range
+separator rather than a negative sign.
+
 ### Option C: Build from research
 
 Start with an empty template and add companies as you research them:

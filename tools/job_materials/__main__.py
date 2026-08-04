@@ -84,6 +84,11 @@ from tools.job_materials.requirements_engine import (  # noqa: E402
     save_preflight_answer,
     write_application_preflight,
 )
+from tools.fresh_24h.careerops_quickscore import load_scoring_profile  # noqa: E402
+from tools.fresh_24h.job_assessment import (  # noqa: E402
+    assessment_context,
+    load_job_assessment,
+)
 from tools.audit_log import append_audit_event  # noqa: E402
 
 
@@ -322,9 +327,11 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         )
         return 2
 
+    scoring_profile = load_scoring_profile(root)
     preflight = build_application_preflight(
         jd,
         known_answers=_known_application_answers(package),
+        candidate_languages=scoring_profile.get("candidate_languages"),
     )
     write_application_preflight(package, preflight)
     research = load_company_research(
@@ -332,6 +339,32 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         root=root,
         company=company or "",
     )
+    # Reuse the scan's structured strengths/gaps only when both the JD and the
+    # confirmed scoring profile still match. A pasted/updated JD naturally
+    # invalidates the record and forces this materials run to reassess it.
+    assessment = load_job_assessment(
+        root,
+        url=extract_url_from_snapshot(package),
+        title=title,
+        company=company,
+        source=str(
+            publisher_context.get("source")
+            or jd_meta(package, root).get("source")
+            or ""
+        ),
+        jd_text=jd,
+        profile=scoring_profile,
+    )
+    if assessment:
+        print(
+            "Reusing current private job assessment: "
+            f"status={assessment.get('status')} revision={assessment.get('revision', 1)}"
+        )
+    else:
+        print(
+            "No current private job assessment found (missing or stale); "
+            "tailor_plan will mark this explicitly and must not present a fresh JD read as stored scoring."
+        )
     if not (research.get("quality") or {}).get("ready_for_tailoring"):
         request_path = write_company_research_request(
             package,
@@ -357,12 +390,14 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         company_research=research,
         use_llm=bool(args.llm),
         publisher_context=publisher_context,
+        job_assessment=assessment,
     )
     payload["application_preflight"] = {
         "ready_for_apply": preflight["ready_for_apply"],
         "next_action": preflight["next_action"],
         "question_ids": [item["id"] for item in preflight["questions"]],
         "review_ids": [item["id"] for item in preflight["review_items"]],
+        "warning_ids": [item["id"] for item in preflight.get("warnings") or []],
     }
     write_tailor_outputs(package, payload)
     ref = write_base_master_ref(package, lane, root)
@@ -414,13 +449,48 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         path = save_preflight_answer(package, args.field, args.value)
         print(f"Wrote {path}")
     jd = read_jd(package, root)
+    scoring_profile = load_scoring_profile(root)
     value = build_application_preflight(
         jd,
         known_answers=_known_application_answers(package),
+        candidate_languages=scoring_profile.get("candidate_languages"),
     )
     write_application_preflight(package, value)
     print(json.dumps(value, ensure_ascii=False, indent=2))
     return 0 if value["ready_for_apply"] else 4
+
+
+def cmd_assessment(args: argparse.Namespace) -> int:
+    """Read the current private assessment for downstream workflows.
+
+    This is intentionally deterministic and model-independent.  Interview and
+    other consumers can call it instead of re-scoring the JD from memory.
+    """
+    root = jobsearch_root()
+    package = _pkg(args.package, job_id=getattr(args, "job_id", None))
+    if package is None or not package.is_dir():
+        print(f"not a package dir: {package}", file=sys.stderr)
+        return 2
+    title, company = _parse_title_company(package)
+    snapshot = snapshot_context(package)
+    jd = read_jd(package, root)
+    profile = load_scoring_profile(root)
+    record = load_job_assessment(
+        root,
+        url=extract_url_from_snapshot(package) or snapshot.get("source_url", ""),
+        title=title,
+        company=company,
+        source=str(snapshot.get("source") or ""),
+        jd_text=jd,
+        profile=profile,
+    )
+    context = assessment_context(record)
+    context["consumer"] = "interview_or_materials"
+    context["job"] = {"title": title, "company": company}
+    if record is not None:
+        context["record"] = record
+    print(json.dumps(context, ensure_ascii=False, indent=2))
+    return 0 if record is not None else 3
 
 
 def cmd_company(args: argparse.Namespace) -> int:
@@ -687,6 +757,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--field", default="")
     p.add_argument("--value", default="")
     p.set_defaults(func=cmd_preflight)
+
+    p = sub.add_parser(
+        "assessment",
+        help="Read the current private per-job assessment for materials/interview",
+    )
+    p.add_argument("action", choices=["show"])
+    p.add_argument("--package", default=None, help="Package path (or use --job-id)")
+    p.add_argument("--job-id", default=None)
+    p.set_defaults(func=cmd_assessment)
 
     p = sub.add_parser(
         "tailor",

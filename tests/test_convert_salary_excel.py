@@ -5,6 +5,7 @@ from tools.convert_salary_excel import (
     INDEX_PATTERNS,
     detect_column_type,
     header_matches,
+    parse_numeric_cell,
     parse_sheet,
 )
 
@@ -86,6 +87,27 @@ class DetectColumnTypeTests(unittest.TestCase):
         companies = parse_sheet(ws)
 
         self.assertEqual(companies[0]["categories"]["software_engineering"], {"count": 8, "index": 110.0})
+
+    def test_parse_sheet_accepts_decimal_comma_and_localized_thousands(self):
+        ws = FakeWorksheet([
+            ("Company", "Engineering Count", "Engineering Index", "Overall Salary"),
+            ("Example Corp", "12,0", "1.234,5", "1 234,5"),
+        ])
+
+        companies = parse_sheet(ws)
+
+        assert companies[0]["categories"]["engineering"] == {
+            "count": 12,
+            "index": 1234.5,
+        }
+        assert companies[0]["categories"]["overall_salary"] == {"index": 1234.5}
+
+    def test_ambiguous_single_separator_is_rejected_for_numeric_cells(self):
+        with self.assertRaises(ValueError):
+            parse_numeric_cell("1,234")
+
+    def test_single_dot_decimal_keeps_excel_v13_compatibility(self):
+        self.assertEqual(parse_numeric_cell("1.234"), 1.234)
 
 
 if __name__ == "__main__":

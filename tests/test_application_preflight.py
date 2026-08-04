@@ -90,3 +90,33 @@ def test_preflight_handles_chinese_application_requirements():
     assert {"language", "experience_years"} <= {
         item["id"] for item in result["review_items"]
     }
+
+
+def test_preflight_language_pass_does_not_block_apply():
+    result = build_application_preflight(
+        "English required. Please send your CV.",
+        candidate_languages=[{"language": "English", "level": "C1"}],
+    )
+
+    assert result["ready_for_apply"] is True
+    assert result["review_items"] == []
+
+
+def test_preflight_language_flag_is_visible_but_not_a_hard_block():
+    result = build_application_preflight(
+        "Must be fluent in English.",
+        candidate_languages=[{"language": "English", "level": "B2"}],
+    )
+
+    assert result["ready_for_apply"] is True
+    assert result["warnings"][0]["id"] == "language_gate"
+
+
+def test_preflight_language_fail_blocks_until_profile_is_corrected():
+    result = build_application_preflight(
+        "Fluent French required.",
+        candidate_languages=[{"language": "English", "level": "C1"}],
+    )
+
+    assert result["ready_for_apply"] is False
+    assert result["review_items"][0]["id"] == "language_gate"

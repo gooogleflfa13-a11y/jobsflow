@@ -84,6 +84,27 @@ def test_recovered_profile_restores_score_separation(tmp_path, monkeypatch):
     assert profile["_profile_health"]["status"] == "ready"
 
 
+def test_language_status_uses_scoring_profile_languages(tmp_path, monkeypatch):
+    profile_dir = _write_private_profile(tmp_path)
+    queries_path = profile_dir / "queries.json"
+    config = json.loads(queries_path.read_text(encoding="utf-8"))
+    config["scoring_profile"]["languages"] = ["English B2"]
+    queries_path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setenv("JOBSEARCH_ROOT", str(tmp_path / "JobSearch_2026"))
+
+    profile = load_scoring_profile()
+    result = score_job(
+        title="Operations Analyst",
+        company="Acme",
+        teaser="Must be fluent in English; improve process automation.",
+        profile=profile,
+    )
+
+    assert profile["language_profile_status"] == "ready"
+    assert profile["candidate_languages"][0]["language"] == "English"
+    assert result.language_gate == "FLAG"
+
+
 def test_incomplete_profile_is_capped_and_explains_why():
     result = score_job(
         title="Backend Engineer",

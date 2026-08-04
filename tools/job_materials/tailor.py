@@ -23,6 +23,7 @@ from tools.job_materials.jd_store import jd_meta
 from tools.job_materials.llmo import build_llmo_contract
 from tools.job_materials.paths import find_latest_cl_master_docx, find_latest_master_docx
 from tools.job_materials.publisher import build_material_filenames, classify_publisher
+from tools.fresh_24h.job_assessment import assessment_context
 
 
 def _tokens(text: str) -> set[str]:
@@ -123,6 +124,46 @@ def rank_by_jd(items: list[str], jd: str) -> list[str]:
     return sorted(
         items,
         key=lambda item: (_jd_item_relevance(item, jd), 0.01 * len(item)),
+        reverse=True,
+    )
+
+
+def _assessment_relevance(item: str, context: dict[str, Any]) -> float:
+    """Score a base bullet against persisted assessment strengths.
+
+    This is deliberately only an ordering signal.  The fact-checked base
+    remains authoritative, and a gap never creates a claim.  Keeping the
+    ordering deterministic lets a less capable model consume the same
+    emphasis chosen during scoring instead of re-reading the JD from scratch.
+    """
+    strengths = context.get("priority_strengths") or context.get("strengths") or []
+    signal_parts: list[str] = []
+    for strength in strengths:
+        if isinstance(strength, dict):
+            signal_parts.extend(
+                str(strength.get(key) or "")
+                for key in ("label", "evidence", "reason", "basis")
+            )
+        else:
+            signal_parts.append(str(strength))
+    signal_tokens = _tokens(" ".join(signal_parts))
+    if not signal_tokens:
+        return 0.0
+    item_tokens = _tokens(item)
+    return float(len(item_tokens & signal_tokens))
+
+
+def rank_by_assessment(items: list[str], context: dict[str, Any]) -> list[str]:
+    """Keep JD order while moving persisted-strength evidence to the front."""
+    if not context.get("available") or not context.get("strengths"):
+        return list(items)
+    jd_order = {id(item): index for index, item in enumerate(items)}
+    return sorted(
+        items,
+        key=lambda item: (
+            _assessment_relevance(item, context),
+            -jd_order.get(id(item), 0),
+        ),
         reverse=True,
     )
 
@@ -324,6 +365,7 @@ def build_role_industry_match_contract(
     evidence_map_detail: dict[str, dict[str, Any]],
     base_id: str | None,
     interest_angles: list[str] | None = None,
+    job_assessment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the compact, optional role/industry-match slot for a Cover Letter.
 
@@ -372,6 +414,7 @@ def build_role_industry_match_contract(
     technology_jd = any(term in jd_lower for term in technology_terms)
     confirmed_interest = [str(item).strip() for item in (interest_angles or []) if str(item).strip()]
     allow_industry_interest = bool(lane == "G" and technology_jd and confirmed_interest)
+    assessment = assessment_context(job_assessment)
 
     if evidence_ids and has_verified_company_context:
         mode = "company_verified"
@@ -408,6 +451,17 @@ def build_role_industry_match_contract(
             "Connect that requirement to the selected fact-checked evidence and state the value the candidate can provide.",
         ],
         "focus_capabilities": list(jd_focus[:3]),
+        "assessment_strengths": [
+            str(item.get("label") or "")
+            for item in assessment.get("priority_strengths") or []
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ],
+        "assessment_gaps": [
+            str(item.get("label") or "")
+            for item in assessment.get("interview_focus_gaps") or []
+            if isinstance(item, dict) and str(item.get("label") or "").strip()
+        ],
+        "assessment_revision": assessment.get("revision"),
         "jd_keywords": clean_keywords[:4],
         "jd_anchor_ids": [str(anchor.get("anchor_id")) for anchor in usable_anchors if anchor.get("anchor_id")],
         "jd_anchor_text": [str(anchor.get("text") or "").strip() for anchor in usable_anchors if str(anchor.get("text") or "").strip()],
@@ -436,7 +490,8 @@ def build_role_industry_match_contract(
         "instruction": (
             "Write one compact paragraph of one or two sentences by replacing the generic "
             "company-interest slot. Follow role requirement → candidate evidence → value. "
-            "Use only the supplied JD anchors and evidence IDs; avoid generic praise, "
+            "Use the persisted assessment strengths to choose the evidence emphasis, then "
+            "use only the supplied JD anchors and evidence IDs; avoid generic praise, "
             "long company introductions, recruiter names and unsupported claims. "
             "If the mode is omit, leave this optional slot out and keep the generic letter."
         ),
@@ -465,9 +520,16 @@ def build_tailored_payload(
     company_research: dict[str, Any] | None = None,
     use_llm: bool = False,
     publisher_context: dict[str, Any] | None = None,
+    job_assessment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jd = (jd_text or "").strip()
     shallow = len(jd) < 150
+    assessment = assessment_context(job_assessment)
+    if isinstance(job_assessment, dict) and "record" not in assessment:
+        # Keep the compact consumer fields easy for small models while
+        # preserving the full score snapshots for audit/debug consumers.
+        assessment = dict(assessment)
+        assessment["record"] = job_assessment
     research = company_research or {}
     publisher_context = publisher_context if isinstance(publisher_context, dict) else {}
     publisher_classification = classify_publisher(
@@ -517,7 +579,11 @@ def build_tailored_payload(
     skills_ordered = (skills_hit + skills_rest)[:14]
 
     base_bullets = list(base.get("bullets") or [])
-    bullets = rank_by_jd(base_bullets, combined_context)[:5]
+    bullets = rank_by_jd(base_bullets, combined_context)
+    # The scanner's persisted strengths are the first downstream consumer:
+    # they refine the deterministic JD order without allowing gaps to create
+    # claims or reopening the fact source.
+    bullets = rank_by_assessment(bullets, assessment)[:5]
     evidence_map = build_evidence_map(jd_focus, base_bullets)
     base_factcheck = (base.get("factcheck") or {}).get("status")
     quality_gate = build_quality_gate(
@@ -623,6 +689,7 @@ def build_tailored_payload(
         evidence_map_detail=evidence_map_detail,
         base_id=str(base.get("base_id") or ""),
         interest_angles=interest_angles,
+        job_assessment=job_assessment,
     )
 
     payload: dict[str, Any] = {
@@ -657,13 +724,16 @@ def build_tailored_payload(
         "resume_strategy": {
             "role_priorities": role_priorities,
             "focus_capabilities": jd_focus,
+            "assessment": assessment,
             "instruction": (
                 "Emphasize only evidence-backed base achievements that demonstrate "
-                "the JD capabilities and company operating context."
+                "the JD capabilities and company operating context. Start with the "
+                "persisted assessment strengths; treat its gaps as review items only."
             ),
         },
         "cover_letter_strategy": {
             "interest_angles": interest_angles,
+            "assessment": assessment,
             "publisher_policy": publisher_classification.get(
                 "cover_letter_company_policy"
             ),
@@ -695,6 +765,7 @@ def build_tailored_payload(
                         role_industry_match.get("company_fact") or {},
                         role_industry_match.get("jd_anchor_text") or [],
                         role_industry_match.get("evidence_ids") or [],
+                        role_industry_match.get("assessment_strengths") or [],
                     ],
                     "evidence_ids": role_industry_match.get("evidence_ids") or [],
                     "instruction": role_industry_match["instruction"],
@@ -740,6 +811,7 @@ def build_tailored_payload(
             "required_order": [
                 "application_preflight",
                 "quality_gate",
+                "job_assessment",
                 "resume_strategy",
                 "evidence_map",
                 "llmo_anchor_status",
@@ -751,6 +823,7 @@ def build_tailored_payload(
                 "pdf_validation",
             ],
             "required_inputs": [
+                "job_assessment",
                 "llmo.jd_anchors",
                 "llmo.evidence_nodes",
                 "llmo.cross_material",
@@ -777,6 +850,10 @@ def build_tailored_payload(
                 "exceed the generic Cover Letter length budget or solve overflow by shrinking the layout",
             ],
         },
+        # Keep a compact read view even when no scan record is available.  A
+        # missing/stale state is explicit instead of silently triggering a new
+        # fit analysis in a lower-capability model.
+        "job_assessment": assessment,
         "notes": [
             "A–F base holds fact-check; tailor only re-emphasizes for this JD.",
             (
@@ -786,6 +863,17 @@ def build_tailored_payload(
             *(["JD short — paste full JD into package via jd set"] if shallow else []),
         ],
     }
+    if isinstance(job_assessment, dict):
+        # Reuse the scan's current assessment rather than asking a model to
+        # rediscover the same strengths and gaps from scratch. The caller has
+        # already checked the JD/profile hashes before passing this object.
+        payload["notes"].append(
+            "Reused the current private job assessment; stale JD/profile records are ignored."
+        )
+    else:
+        payload["notes"].append(
+            "No current private job assessment was supplied; do not present a fresh JD re-read as stored scoring."
+        )
     payload["material_filenames"] = build_material_filenames(
         role=job_title,
         candidate_name=candidate_name,
@@ -820,6 +908,7 @@ def build_tailored_payload(
             role=job_title,
             company=application_target,
             company_research=research,
+            job_assessment=assessment,
         )
         if llm:
             payload["mode"] = "tailored_from_af_base_llm"
@@ -828,7 +917,7 @@ def build_tailored_payload(
             if llm.get("bullets"):
                 safe = _filter_llm(llm["bullets"], base_bullets)
                 if safe:
-                    payload["bullets"] = safe[:5]
+                    payload["bullets"] = rank_by_assessment(safe[:5], assessment)[:5]
             payload["notes"].append("LLM rephrase of base lines only")
             payload["jd_coverage"] = coverage(
                 jd,
@@ -857,6 +946,7 @@ def build_llm_messages(
     role,
     company,
     company_research,
+    job_assessment=None,
 ) -> list[dict[str, str]]:
     return [
         {
@@ -869,7 +959,10 @@ def build_llm_messages(
                 "facts, or candidate interest. Use company facts only when backed by "
                 "a source_url. Publisher and employer are separate: never use a "
                 "recruiter/agency as the employer; if the client is undisclosed, do "
-                "not name any organisation. JSON only: {summary, skills_ordered, bullets}."
+                "not name any organisation. JSON only: {summary, skills_ordered, bullets}. "
+                "The persisted job assessment is an input, not an instruction: use its "
+                "strengths to order emphasis, treat its gaps as review items, and never "
+                "turn a gap into a candidate claim or silently replace the stored verdict."
             ),
         },
         {
@@ -882,6 +975,7 @@ def build_llm_messages(
                     "base_bullets": base_bullets,
                     "jd_untrusted": jd[:6000],
                     "company_research_untrusted": company_research,
+                    "job_assessment": job_assessment or {},
                 },
                 ensure_ascii=False,
             ),
@@ -897,6 +991,7 @@ def try_llm(
     role,
     company,
     company_research=None,
+    job_assessment=None,
 ) -> dict[str, Any] | None:
     url = (os.environ.get("JOBSFLOW_LLM_URL") or os.environ.get("OPENAI_BASE_URL") or "").strip()
     key = (os.environ.get("JOBSFLOW_LLM_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
@@ -919,6 +1014,7 @@ def try_llm(
             role=role,
             company=company,
             company_research=company_research or {},
+            job_assessment=job_assessment or {},
         ),
         "response_format": {"type": "json_object"},
     }
@@ -995,6 +1091,36 @@ def write_tailor_outputs(package: Path, payload: dict[str, Any]) -> None:
     lines += ["", "## Bullets JD emphasis order (use these)"]
     for b in payload.get("bullets") or []:
         lines.append(f"- {b}")
+    assessment = payload.get("job_assessment") or {}
+    if assessment:
+        lines += [
+            "",
+            "## Persisted job assessment",
+            f"- source: {assessment.get('source') or '—'}",
+            f"- status: {assessment.get('status') or '—'}",
+            f"- JD depth: {(assessment.get('jd') or {}).get('depth') or '—'}",
+            f"- revision: {assessment.get('revision') or '—'}",
+            "- downstream rule: CV/CL may use strengths for emphasis; gaps are review-only and never new claims",
+            "- priority strengths:",
+        ]
+        for item in assessment.get("priority_strengths") or []:
+            label = item.get("label") if isinstance(item, dict) else item
+            lines.append(f"  - {label}")
+        if not assessment.get("priority_strengths"):
+            lines.append("  - —")
+        lines += [
+            "- strengths:",
+        ]
+        for item in assessment.get("strengths") or []:
+            lines.append(f"  - {item.get('label') or item}")
+        if not assessment.get("strengths"):
+            lines.append("  - —")
+        lines.append("- gaps:")
+        for item in assessment.get("gaps") or []:
+            label = item.get("label") if isinstance(item, dict) else item
+            lines.append(f"  - {label}")
+        if not assessment.get("gaps"):
+            lines.append("  - —")
     lines += ["", "## Cover-letter interest angles"]
     angles = (payload.get("cover_letter_strategy") or {}).get("interest_angles") or []
     for angle in angles:

@@ -146,6 +146,18 @@ being silently treated as completed semantic results.
 - PDF conversion also uses a content-hash cache, so unchanged DOCX files are not
   converted again.
 
+Each scored job also receives a versioned private assessment record. It stores
+the pass-1, pass-2 and final score snapshots, structured supported strengths and
+open review gaps, plus JD/profile hashes. If the JD or confirmed search profile
+changes, the previous record is treated as stale and recomputed rather than
+silently reused. These records live under
+`JobSearch_2026/02_Tracker/job_assessments/`; candidate profile text is not
+copied into the public product. This is a shared read contract, not a
+write-only log: CV bullet ordering, the Cover Letter/application-email evidence
+order, and interview gap preparation consume the same current record. Missing
+or stale records are surfaced explicitly instead of being silently replaced by
+another fit analysis.
+
 ## Materials
 
 Materials use fact-checked direction bases (A–F, with an optional G capability
@@ -158,7 +170,7 @@ uses only the JD, role function or industry context, and it can be omitted when
 evidence is insufficient. It never adds to the generic one-page length budget or
 blocks `/apply`.
 
-A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
+A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. A separate language gate compares explicit job-language requirements with the private language profile: an undeclared required language is excluded, a potentially higher level is flagged for human judgment, and the language used to write the advert is not mistaken for a job requirement. Salary parsing also handles localized numbers, range hyphens, and `k/M/B` or `千/万/亿` amount suffixes; ambiguous formats stay neutral and visible for confirmation. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
 
 DOCX masters remain the source. LibreOffice runs headlessly, CVs and cover letters default to one page (unless you explicitly need otherwise), and unchanged documents reuse a content-hash PDF cache.
 

@@ -31,7 +31,12 @@ sys.path.insert(0, str(REPO))
 from careerops_quickscore import (  # noqa: E402
     SHEET_HEADERS,
     build_tracker_row,
+    load_scoring_profile,
     score_job,
+)
+from job_assessment import (  # noqa: E402
+    build_job_assessment,
+    persist_job_assessment,
 )
 from job_id import allocate_ids, max_prefix_from_ids  # noqa: E402
 from linkedin_enrich import (  # noqa: E402
@@ -410,7 +415,50 @@ def run_two_pass(
         "pass1_drop_samples": [],
         "semantic_pending_rows": 0,
         "semantic_pending_tasks": [],
+        "assessment_records": 0,
+        "assessment_errors": [],
+        "language_gate_failed": 0,
+        "language_gate_dropped": [],
     }
+
+    # Keep one profile fingerprint for every assessment in this run.  The
+    # profile itself never enters the assessment JSON; only its hash does.
+    assessment_profile = load_scoring_profile(repo)
+    assessment_events: list[dict[str, Any]] = []
+
+    def record_assessment(
+        h: dict,
+        *,
+        score: Any,
+        pass1: Any | None = None,
+        pass2: Any | None = None,
+        depth: str = "teaser",
+        status: str = "",
+    ) -> None:
+        try:
+            assessment_events.append(
+                build_job_assessment(
+                    repo=repo,
+                    job_id=str(h.get("岗位编号") or h.get("job_id") or h.get("id") or ""),
+                    title=str(h.get("title") or ""),
+                    company=str(h.get("company") or ""),
+                    source=str(h.get("source") or ""),
+                    url=str(h.get("url") or ""),
+                    jd_text=str(
+                        h.get("_deep_jd_full")
+                        if depth == "deep" and h.get("_deep_jd_full")
+                        else h.get("teaser") or ""
+                    ),
+                    jd_depth=depth,
+                    profile=assessment_profile,
+                    score=score,
+                    pass1=pass1,
+                    pass2=pass2,
+                    status=status,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            meta["assessment_errors"].append(str(exc))
 
     gated: list[tuple[dict, Any]] = []
     for h in hits:
@@ -418,7 +466,32 @@ def run_two_pass(
         teaser1 = h.get("teaser") or ""
         sc1 = score_hit(h, teaser1, repo=repo)
         h["_sc1"] = sc1
+        if getattr(sc1, "language_gate", "") == "FAIL":
+            record_assessment(
+                h,
+                score=sc1,
+                pass1=sc1,
+                depth="teaser",
+                status="language_gate_failed",
+            )
+            meta["language_gate_failed"] += 1
+            if len(meta["language_gate_dropped"]) < 15:
+                meta["language_gate_dropped"].append(
+                    {
+                        "title": h.get("title"),
+                        "company": h.get("company"),
+                        "note": sc1.language_note,
+                    }
+                )
+            continue
         if sc1.score < gate_pass1:
+            record_assessment(
+                h,
+                score=sc1,
+                pass1=sc1,
+                depth="teaser",
+                status="pass1_filtered",
+            )
             meta["pass1_dropped"] += 1
             if len(meta["pass1_drop_samples"]) < 15:
                 meta["pass1_drop_samples"].append(
@@ -463,7 +536,46 @@ def run_two_pass(
         h["_sc2"] = sc2
         h["_jd_depth"] = depth
 
+        # A hard language mismatch is a veto independent of the numeric score
+        # or a caller's custom min_final threshold. Never emit it to the
+        # tracker/Sheets result set.
+        if getattr(sc2, "language_gate", "") == "FAIL":
+            record_assessment(
+                h,
+                score=sc2,
+                pass1=sc1,
+                pass2=sc2,
+                depth=depth,
+                status="language_gate_failed",
+            )
+            meta["language_gate_failed"] += 1
+            if len(meta["language_gate_dropped"]) < 15:
+                meta["language_gate_dropped"].append(
+                    {
+                        "title": h.get("title"),
+                        "company": h.get("company"),
+                        "note": sc2.language_note,
+                    }
+                )
+            continue
+
         below_final = sc2.score < min_final
+        if below_final:
+            assessment_status = "final_filtered"
+        elif sc2.semantic_pending_count:
+            assessment_status = "pending"
+        elif depth != "deep":
+            assessment_status = "provisional"
+        else:
+            assessment_status = "ready"
+        record_assessment(
+            h,
+            score=sc2,
+            pass1=sc1,
+            pass2=sc2,
+            depth=depth,
+            status=assessment_status,
+        )
         if below_final:
             meta["dropped_final"].append(
                 {
@@ -509,6 +621,19 @@ def run_two_pass(
     pending_rows = pending_semantic_rows(draft_rows)
     meta["semantic_pending_rows"] = len(pending_rows)
     meta["semantic_pending_tasks"] = pending_semantic_tasks(draft_rows)
+
+    for assessment in assessment_events:
+        try:
+            persist_job_assessment(repo, assessment)
+            meta["assessment_records"] += 1
+        except OSError as exc:
+            meta["assessment_errors"].append(str(exc))
+    if assessment_events:
+        meta["assessment_dir"] = str(
+            (repo if repo.name == "JobSearch_2026" else repo / "JobSearch_2026")
+            / "02_Tracker"
+            / "job_assessments"
+        )
     return draft_rows, meta
 
 
@@ -637,12 +762,24 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"id baseline prefixes={len(baseline)} (local tracker; no gsheet)")
     print(f"pass1 kept={meta['pass1_kept']} dropped={meta['pass1_dropped']}")
+    if meta.get("language_gate_failed"):
+        print(f"language gate failed={meta['language_gate_failed']} (hard veto; not emitted)")
     print(f"deep attempted={meta['deep_attempted']} ok={meta['deep_ok']}")
     n_below = len(meta["dropped_final"])
     print(
         f"final kept={meta['final_kept']} "
         f"pass2_below_min={n_below} (in_csv={args.keep_below_final}) → {out}"
     )
+    if meta.get("assessment_records"):
+        print(
+            f"assessments={meta['assessment_records']} "
+            f"(private JSON → {meta.get('assessment_dir', 'JobSearch_2026/02_Tracker/job_assessments')})"
+        )
+    if meta.get("assessment_errors"):
+        print(
+            f"WARNING: assessment persistence errors={len(meta['assessment_errors'])}",
+            file=sys.stderr,
+        )
     if meta.get("semantic_pending_rows"):
         print(
             f"WARNING: semantic pending rows={meta['semantic_pending_rows']} "

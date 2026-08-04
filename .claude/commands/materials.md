@@ -33,6 +33,14 @@ python3 -m tools.job_materials jd set --job-id C0-005 --file ./jd.txt
 - `next_action=review_requirements`：逐项把 `review_items` 与 fact-checked profile 对照
 - `ready_for_apply=false`：不得靠猜测填空，也不得跳到最终投递
 
+如果该岗位曾经经过 `/scan` 两段评分，pipeline 会在 JD 与评分配置哈希仍一致时读取
+`JobSearch_2026/02_Tracker/job_assessments/<hash>.json`。这不是只写不读的日志：
+同一份记录会进入 CV 的 bullet 排序、Cover Letter 的证据选择/岗位匹配段，以及申请邮件
+的共同证据顺序；`tailor_plan.json.job_assessment` 和
+`low_model_contract` 会明确要求下游先读取它。缺口只作为待核对事项和面试准备问题，
+绝不能把缺口当成编造经历的理由。JD 或求职意向发生变化时旧记录不会复用，并会明确标记
+`missing_or_stale`，而不是悄悄重算后冒充原评估。
+
 回答通过命令保存，避免换模型后丢失：
 
 ```bash

@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from tools.profile_recovery import repair_scoring_profile
+from tools.language_gate import FAIL as LANGUAGE_FAIL
+from tools.language_gate import FLAG as LANGUAGE_FLAG
+from tools.language_gate import PASS as LANGUAGE_PASS
+from tools.language_gate import REVIEW as LANGUAGE_REVIEW
+from tools.language_gate import evaluate_language_gate, parse_candidate_languages
+from tools.salary_parsing import AMBIGUOUS, EMPTY, PARSED, parse_salary_range
 
 
 @dataclass
@@ -43,9 +49,17 @@ class ScoreResult:
     cap_notes: str = ""  # caps triggered, semicolon-joined
     semantic_note: str = ""  # LLM semantic-resume-match note / fallback flag
     semantic_source: str = "not_applicable"  # not_applicable|done|pending_fallback|keyword_fallback
+    salary_parse_status: str = EMPTY  # parsed|empty|ambiguous|invalid
+    language_gate: str = LANGUAGE_REVIEW  # PASS|FLAG|FAIL|REVIEW
+    language_note: str = ""
     semantic_pending_count: int = 0
     semantic_pending_tasks: tuple[str, ...] = ()
     company_brief_override: str = ""  # agent-generated 公司简介 (position-profile task)
+    # Structured findings are kept alongside the legacy display strings.  The
+    # private assessment store consumes these fields so later workflows do not
+    # have to re-infer strengths and gaps from a short CSV reason.
+    strengths: tuple[dict[str, str], ...] = ()
+    gap_items: tuple[dict[str, str], ...] = ()
 
 
 _PROFILE_NOTICES: set[str] = set()
@@ -253,7 +267,12 @@ def load_scoring_profile(repo: Path | None = None) -> dict[str, Any]:
     if configured_root:
         jobsearch_root = Path(configured_root).expanduser()
     elif repo is not None:
-        jobsearch_root = Path(repo) / "JobSearch_2026"
+        candidate_root = Path(repo).expanduser()
+        jobsearch_root = (
+            candidate_root
+            if candidate_root.name == "JobSearch_2026"
+            else candidate_root / "JobSearch_2026"
+        )
     else:
         jobsearch_root = Path(__file__).resolve().parents[2] / "JobSearch_2026"
     path = jobsearch_root / "00_Profile" / "queries.json"
@@ -277,6 +296,35 @@ def load_scoring_profile(repo: Path | None = None) -> dict[str, Any]:
             file=sys.stderr,
         )
         _PROFILE_NOTICES.add(notice_key)
+    # Language declarations are private profile data, not search keywords. A
+    # setup-generated profile normally stores them in ``candidate_languages``,
+    # but older/newer workspaces may use ``scoring_profile.languages`` or
+    # ``config.personal.json``.  Try all representations in that order so the
+    # status shown to the user matches the declaration actually used by the
+    # scorer (which also has a ``languages`` fallback).
+    language_sources: list[Any] = [
+        profile.get("candidate_languages"),
+        profile.get("languages"),
+    ]
+    personal_path = jobsearch_root / "00_Profile" / "config.personal.json"
+    try:
+        personal = json.loads(personal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        personal = {}
+    if isinstance(personal, dict):
+        language_sources.extend(
+            [personal.get("language_profile"), personal.get("languages")]
+        )
+
+    normalized_languages: list[dict[str, Any]] = []
+    for source in language_sources:
+        recovered = parse_candidate_languages(source)
+        if recovered:
+            normalized_languages = recovered
+            break
+    if normalized_languages:
+        profile["candidate_languages"] = normalized_languages
+    profile["language_profile_status"] = "ready" if normalized_languages else "missing"
     profile["_profile_health"] = health
     return profile
 
@@ -374,21 +422,34 @@ def _semantic_resume_match(
     done_dir = tracker / "semantic_matches" / "done"
     pending_dir = tracker / "semantic_matches" / "pending"
 
-    # If an agent already filled in a verdict, use it.
+    # If an agent already filled in a verdict, use it — but ONLY when the
+    # verdict was made against the SAME lane profile. A verdict written under
+    # an earlier letter (e.g. A) must not be reused after the lane has been
+    # re-classified (e.g. C): the resume score would silently come from the
+    # wrong capability profile. Stale verdicts are discarded and re-pended
+    # under the current letter so lane and resume always agree.
     done_file = done_dir / f"{key}.json"
     if done_file.exists():
         try:
             verdict = json.loads(done_file.read_text(encoding="utf-8"))
-            score = float(verdict.get("resume_match"))
-            basis = str(verdict.get("basis") or "upper_only").casefold()
-            score = _semantic_score_cap(cap, score, basis)
-            note = str(verdict.get("note") or "")
-            return {
-                "resume": score,
-                "note": f"语义简历匹配({letter})[{basis}]：{note}",
-                "source": "done",
-                "pending_key": "",
-            }
+            verdict_letter = str(verdict.get("letter") or "").strip().upper()
+            if verdict_letter == letter:
+                score = float(verdict.get("resume_match"))
+                basis = str(verdict.get("basis") or "upper_only").casefold()
+                score = _semantic_score_cap(cap, score, basis)
+                note = str(verdict.get("note") or "")
+                return {
+                    "resume": score,
+                    "note": f"语义简历匹配({letter})[{basis}]：{note}",
+                    "basis": basis,
+                    "source": "done",
+                    "pending_key": "",
+                }
+            # Stale verdict under a different lane → discard and re-pend.
+            try:
+                done_file.unlink()
+            except OSError:
+                pass
         except (OSError, ValueError, TypeError):
             pass
 
@@ -430,7 +491,16 @@ def _semantic_resume_match(
             "status": "pending",
         }
         pending_file = pending_dir / f"{key}.json"
-        if not pending_file.exists():
+        # Rewrite when missing OR when the pending task was generated under an
+        # older lane letter — a stale profile payload must not be judged.
+        rewrite = not pending_file.exists()
+        if not rewrite:
+            try:
+                _old = json.loads(pending_file.read_text(encoding="utf-8"))
+                rewrite = str(_old.get("letter") or "").strip().upper() != letter
+            except (OSError, ValueError):
+                rewrite = True
+        if rewrite:
             pending_file.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
@@ -617,11 +687,32 @@ def score_job(
         else 3.0
     )
 
+    language_text = f"{title} {teaser} {jd_full or ''}"
     language_match = re.search(
         r"\b(cantonese|mandarin|english|french|german|spanish|japanese|korean)\b|"
         r"(粤语|普通话|英语|英文|法语|德语|西班牙语|日语|韩语)",
-        text,
+        language_text,
         re.I,
+    )
+    candidate_languages = profile.get("candidate_languages")
+    if candidate_languages is None:
+        candidate_languages = profile.get("languages")
+    language_gate_result = evaluate_language_gate(language_text, candidate_languages)
+    language_gate = str(language_gate_result.get("status") or LANGUAGE_REVIEW)
+    language_note = str(language_gate_result.get("note") or "")
+    language_requirements = language_gate_result.get("requirements") or []
+    language_requirement = (
+        "；".join(
+            f"{item.get('language') or '语言'}"
+            + (
+                f"（{item.get('level')}）"
+                if item.get("level") and item.get("level") != "unspecified"
+                else ""
+            )
+            for item in language_requirements
+            if isinstance(item, dict)
+        )
+        or (language_match.group(0) if language_match else "未说明")
     )
     qualification_match = re.search(
         r"\b(certification|certificate|licen[cs]e|qualified|admitted|degree)\b|"
@@ -655,11 +746,11 @@ def score_job(
     work = 2.3 if risk_hits else float(neutral_scores.get("work", 3.5))
 
     pay = float(neutral_scores.get("pay", 3.0))
-    salary_match = re.search(r"\$?\s*([\d,]+)\s*[–-]\s*\$?\s*([\d,]+)", salary or "")
+    salary_result = parse_salary_range(salary or "")
+    salary_parse_status = salary_result.status
     minimum_salary = profile.get("minimum_salary")
-    if salary_match and isinstance(minimum_salary, (int, float)):
-        low = int(salary_match.group(1).replace(",", ""))
-        pay = 4.0 if low >= minimum_salary else 2.0
+    if salary_result.status == PARSED and salary_result.low is not None and isinstance(minimum_salary, (int, float)):
+        pay = 4.0 if salary_result.low >= minimum_salary else 2.0
 
     # Determine lane (letter) early so semantic resume matching can load the
     # lane-specific capability profile (A-G). Keeps eligibility rules unchanged.
@@ -728,6 +819,7 @@ def score_job(
     # back to the keyword-hit score and flags it.
     semantic_note = None
     semantic_source = "not_applicable"
+    semantic_basis = ""
     semantic_cap_notes: list[str] = []
     if _is_deep_depth(jd_depth):
         sem = _semantic_resume_match(
@@ -747,6 +839,7 @@ def score_job(
             )
             if sem.get("resume") is not None:
                 resume = float(sem["resume"])
+                semantic_basis = str(sem.get("basis") or "").casefold()
             elif raw_semantic_source == "pending":
                 fallback_cap = float(sem.get("fallback_cap") or 4.0)
                 if resume > fallback_cap:
@@ -800,28 +893,190 @@ def score_job(
     if required_years and isinstance(max_years, (int, float)) and required_years > max_years:
         cap = min(cap, 3.4)
         cap_notes.append("相关年限要求超出已确认经历cap3.4")
+    if language_gate == LANGUAGE_FAIL:
+        cap = min(cap, 2.9)
+        cap_notes.append("语言门FAIL，未声明JD要求的语言")
     score = round(min(raw, cap) * 20) / 20
     grade = _grade(score)
-    tier = _tier(grade, score)
+    tier = "剔除" if language_gate == LANGUAGE_FAIL else _tier(grade, score)
 
     keys = []
     gaps = []
+    strength_items: list[dict[str, str]] = []
+    gap_items: list[dict[str, str]] = []
     if core_hits:
-        keys.append("目标方向匹配：" + "、".join(core_hits[:4]))
+        label = "目标方向匹配：" + "、".join(core_hits[:4])
+        keys.append(label)
+        strength_items.append(
+            {
+                "kind": "direction",
+                "label": label,
+                "basis": "configured_keyword_match",
+                "status": "supported_signal",
+            }
+        )
+    elif adjacent_hits:
+        label = "相邻方向匹配：" + "、".join(adjacent_hits[:4])
+        strength_items.append(
+            {
+                "kind": "adjacent_direction",
+                "label": label,
+                "basis": "configured_keyword_match",
+                "status": "transferable_signal",
+            }
+        )
     if evidence_hits:
-        keys.append("简历证据匹配：" + "、".join(evidence_hits[:4]))
+        label = "简历证据匹配：" + "、".join(evidence_hits[:4])
+        keys.append(label)
+        strength_items.append(
+            {
+                "kind": "resume_evidence",
+                "label": label,
+                "basis": "configured_evidence_keyword",
+                "status": "supported_signal",
+            }
+        )
+    if industry_hits:
+        strength_items.append(
+            {
+                "kind": "industry",
+                "label": "行业关键词匹配：" + "、".join(industry_hits[:4]),
+                "basis": "configured_keyword_match",
+                "status": "supported_signal",
+            }
+        )
+    if semantic_source == "done" and semantic_note:
+        strength_items.append(
+            {
+                "kind": "semantic_resume_match",
+                "label": semantic_note,
+                "basis": semantic_basis or "semantic_review",
+                "status": "agent_reviewed",
+            }
+        )
     if core and not core_hits:
-        gaps.append("职位未命中已配置核心方向")
+        label = "职位未命中已配置核心方向"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "direction",
+                "label": label,
+                "status": "unmatched",
+                "severity": "review",
+                "reason": "JD 中未发现已配置的核心方向关键词",
+            }
+        )
     if evidence and not evidence_hits:
-        gaps.append("未找到直接简历证据")
+        label = "未找到直接简历证据"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "resume_evidence",
+                "label": label,
+                "status": "unknown",
+                "severity": "review",
+                "reason": "当前摘要/JD 未命中已配置证据关键词；不等于候选人一定没有该能力",
+            }
+        )
     if qualification_match:
-        gaps.append("资格要求需逐项核对")
-    if language_match:
-        gaps.append("语言要求需逐项核对")
+        label = "资格要求需逐项核对"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "qualification",
+                "label": label,
+                "status": "unknown",
+                "severity": "review",
+                "evidence": qualification_match.group(0),
+            }
+        )
+    if language_gate == LANGUAGE_FAIL:
+        label = "语言门失败：JD要求的语言未在私有档案中声明"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "language",
+                "label": label,
+                "status": "failed",
+                "severity": "hard_fail",
+                "evidence": language_note,
+            }
+        )
+    elif language_gate == LANGUAGE_FLAG:
+        label = "语言水平可能高于已声明水平，需人工判断"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "language",
+                "label": label,
+                "status": "flagged",
+                "severity": "review",
+                "evidence": language_note,
+            }
+        )
+    elif language_gate == LANGUAGE_REVIEW:
+        label = "语言档案未设置，语言门需人工核对"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "language",
+                "label": label,
+                "status": "unknown",
+                "severity": "review",
+                "evidence": language_note,
+            }
+        )
     if years_match:
-        gaps.append("相关年限需逐项核对")
+        label = "相关年限需逐项核对"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "experience",
+                "label": label,
+                "status": "unknown",
+                "severity": "review",
+                "evidence": years_match.group(0),
+            }
+        )
+    if semantic_pending_count:
+        label = f"语义简历匹配待处理（{semantic_pending_count}项）"
+        gap_items.append(
+            {
+                "kind": "semantic_resume_match",
+                "label": label,
+                "status": "pending",
+                "severity": "review",
+                "reason": ";".join(semantic_pending_tasks),
+            }
+        )
+    if salary_parse_status == AMBIGUOUS:
+        label = "薪资格式需人工核对"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "salary",
+                "label": label,
+                "status": "ambiguous",
+                "severity": "review",
+                "reason": salary_result.reason or "币种或分隔符不足以确定薪资数值",
+            }
+        )
+    elif salary_parse_status == "invalid" and (salary or "").strip() not in {"", "—", "-", "N/A"}:
+        label = "薪资字段未能解析"
+        gaps.append(label)
+        gap_items.append(
+            {
+                "kind": "salary",
+                "label": label,
+                "status": "unknown",
+                "severity": "review",
+                "reason": salary_result.reason or "未找到可用薪资数值",
+            }
+        )
     if not keys:
         keys.append("配置或职位信息有限，保持中性评分")
+    # Keep the legacy display contract for CSV/CLI consumers; the structured
+    # assessment record represents "no gaps" as an empty list.
     if not gaps:
         gaps.append("—")
 
@@ -848,6 +1103,12 @@ def score_job(
     )
     if semantic_note:
         reason = f"{reason}｜{semantic_note}"
+    if salary_parse_status == AMBIGUOUS:
+        reason = f"{reason}｜薪资格式存在歧义，未用于薪资维度，请核对币种/周期"
+    elif salary_parse_status == "invalid" and (salary or "").strip() not in {"", "—", "-", "N/A"}:
+        reason = f"{reason}｜薪资字段未能解析，薪资维度保持中性"
+    if language_gate in {LANGUAGE_FAIL, LANGUAGE_FLAG, LANGUAGE_REVIEW}:
+        reason = f"{reason}｜{language_note}"
     return ScoreResult(
         score=score,
         grade=grade,
@@ -857,7 +1118,7 @@ def score_job(
         resume_ver=letter,
         resume_note=track,
         track=track,
-        language_requirement=language_match.group(0) if language_match else "未说明",
+        language_requirement=language_requirement,
         domain_background="核心匹配" if core_hits else "相邻匹配" if adjacent_hits else "未匹配/待核对",
         qualification_requirement="JD提及，需核对" if qualification_match else "未说明",
         experience_requirement=years_match.group(0) if years_match else "未说明",
@@ -870,9 +1131,14 @@ def score_job(
         cap_notes="；".join(cap_notes),
         semantic_note=semantic_note or "",
         semantic_source=semantic_source,
+        salary_parse_status=salary_parse_status,
+        language_gate=language_gate,
+        language_note=language_note,
         semantic_pending_count=semantic_pending_count,
         semantic_pending_tasks=tuple(semantic_pending_tasks),
         company_brief_override=company_brief_override or "",
+        strengths=tuple(strength_items),
+        gap_items=tuple(gap_items),
     )
 
 
@@ -907,7 +1173,6 @@ SHEET_HEADERS = [
     "批次",  # 如 temp_2026-07-28_1137 或 daily_2026-07-28
     "入表时间",  # HKT 可读时间
     "层级",
-    "匹配分",
     "职位",
     "公司",
     "赛道",
@@ -917,24 +1182,19 @@ SHEET_HEADERS = [
     "链接",
     "简述",
     "语言要求",
-    "领域背景",
     "资格要求",
     "经验要求",
     "匹配要点",
-    "主要缺口",
     "发布日期",
     "简历版本",
     "版本说明",
     "材料状态",
-    "工作时间风险",
     "公司简介",
     "CareerOps分数",
     "CareerOps等级",
     "CareerOps理由",
     "置信度",
     "语义匹配来源",
-    "语义待处理数",
-    "语义待处理任务",
 ]
 
 
@@ -966,6 +1226,8 @@ def build_tracker_row(
         salary=hit.get("salary") or "",
         source=src_zh,
     )
+    # 列顺序与 SHEET_HEADERS（35 列 = 28 + PASS_EXTRA 7）严格一致；
+    # 已删除列（匹配分/领域背景/主要缺口/工作时间风险/语义待处理数/语义待处理任务）不再产出。
     return [
         job_id,
         str(row_num),
@@ -973,7 +1235,6 @@ def build_tracker_row(
         batch_id or "",
         entered_at or "",
         sc.tier,
-        str(sc.match_points),
         hit.get("title") or "",
         hit.get("company") or "—",
         sc.track,
@@ -983,22 +1244,17 @@ def build_tracker_row(
         hit.get("url") or "",
         brief,
         sc.language_requirement,
-        sc.domain_background,
         sc.qualification_requirement,
         sc.experience_requirement,
         sc.match_key,
-        sc.gaps,
         posted,
         sc.resume_ver,
         sc.resume_note,
         "未做",
-        sc.work_time_risk,
         sc.company_brief_override or company_brief(hit.get("company") or "—", hit.get("teaser") or ""),
         f"{sc.score:.2f}",
         sc.grade,
         sc.reason,
         sc.confidence,
         sc.semantic_source,
-        str(sc.semantic_pending_count),
-        ";".join(sc.semantic_pending_tasks),
     ]

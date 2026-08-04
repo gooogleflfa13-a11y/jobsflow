@@ -36,6 +36,12 @@ try:
 except ImportError:
     openpyxl = None
 
+# Support the documented direct-script invocation from the repository root.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tools.salary_parsing import PARSED, parse_localized_number
+
 
 # Column name patterns for auto-detection
 COMPANY_PATTERNS = {"firma", "company", "virksomhed", "employer", "arbejdsgiver"}
@@ -48,6 +54,22 @@ INDEX_PATTERNS = {"indeks", "index", "idx", "salary", "løn", "median", "average
 # Ships populated for this repo's Danish demonstration data; a fork targeting
 # another locale edits this constant.
 COMPOUND_PATTERNS = {"antal", "indeks", "løn", "gennemsnit", "medarbejdere"}
+
+
+def parse_numeric_cell(value):
+    """Return a localized numeric cell as ``float`` or raise ``ValueError``.
+
+    Excel exports often contain decimal commas, grouped dots, or spaces.  A
+    bare value such as ``1,234`` is intentionally rejected because the source
+    locale is not available to tell decimal notation from thousands grouping.
+    """
+
+    # Keep the v1.3 Excel contract: a bare ``1,234`` is unsafe to guess, while
+    # a single dot such as ``1.234`` is treated as a decimal Excel value.
+    result = parse_localized_number(value, ambiguous_strategy="reject_comma")
+    if result.status != PARSED or result.value is None:
+        raise ValueError(result.reason or result.status)
+    return result.value
 
 
 def header_matches(header, patterns):
@@ -197,22 +219,31 @@ def parse_sheet(ws, sheet_label=None):
                 index_val = None
                 if cat["count_col"] < len(row) and row[cat["count_col"]] is not None:
                     try:
-                        count_val = int(row[cat["count_col"]])
+                        parsed_count = parse_numeric_cell(row[cat["count_col"]])
+                        if not parsed_count.is_integer():
+                            raise ValueError("count is not an integer")
+                        count_val = int(parsed_count)
                     except (ValueError, TypeError):
                         pass
                 if cat["index_col"] < len(row) and row[cat["index_col"]] is not None:
                     try:
-                        index_val = float(row[cat["index_col"]])
+                        index_val = parse_numeric_cell(row[cat["index_col"]])
                     except (ValueError, TypeError):
                         pass
+                if count_val is None and index_val is None:
+                    continue
                 entry["categories"][cat_name] = {"count": count_val, "index": index_val}
             elif "value_col" in cat:
                 if cat["value_col"] < len(row) and row[cat["value_col"]] is not None:
                     val = row[cat["value_col"]]
                     try:
-                        val = float(val)
+                        val = parse_numeric_cell(val)
                     except (ValueError, TypeError):
-                        val = str(val)
+                        # Do not put an ambiguous or non-numeric label into a
+                        # numeric salary category.  Keeping it would make the
+                        # downstream lookup appear valid while formatting a
+                        # value that was never parsed.
+                        continue
                     entry["categories"][cat_name] = {"index": val}
 
         companies.append(entry)

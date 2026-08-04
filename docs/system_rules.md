@@ -91,6 +91,7 @@ Their actual queries and relevance rules are candidate- and profession-specific.
 | JD | Prefer cache/structured retrieval; use browser only as a bounded fallback |
 | Pass 2 | Rescore with the best available JD depth |
 | Track | Record pass-1, pass-2 and actual JD depth |
+| Assess | Persist structured strengths/gaps with JD/profile hashes under the private tracker |
 | Materials | Never auto-generate during scan |
 
 - Preview means no sheet push and `--no-record`.
@@ -118,6 +119,39 @@ Their actual queries and relevance rules are candidate- and profession-specific.
   the cached JD, company/role context and lane labels. Its completed verdict may
   set the lane and a sourced-or-explicitly-unverified `company_brief`; otherwise
   deterministic lane and company-brief fallbacks remain in force.
+- Localized salary values use the shared conservative parser. Decimal commas,
+  dotted/space thousands, common currency labels and amount suffixes (`k`,
+  `M`, `B`, `千`, `万`, `亿`) are normalized before scoring. A hyphen between two
+  amounts is treated as a range separator, not a negative sign. A bare
+  ambiguous separator (for example `30,000` without currency, period or range
+  context) is never guessed: the pay dimension stays neutral, the assessment
+  records a salary review gap, and `/intent` keeps the minimum salary unset
+  until the user confirms the format.
+- Language requirements use a deterministic language gate before a final score
+  or application draft. The private setup profile may contain language names
+  and honest levels (for example `English B2; Cantonese native`). A posting
+  language is not inferred merely from the language in which the ad is written.
+  An explicitly required undeclared language is `FAIL` and caps the score at
+  the exclusion tier; a declared language whose stated bar may be higher is
+  `FLAG` and remains available for the user's judgment; a satisfied requirement
+  is `PASS`; and an empty language profile is `REVIEW`, never an invented
+  failure. `/apply` surfaces the same result in deterministic preflight.
+- Each scored job also gets a private, versioned assessment at
+  `02_Tracker/job_assessments/<hash>.json`. It records the pass-1/pass-2/final
+  score snapshots, structured strengths and gaps, JD depth, and hashes of the
+  JD and scoring profile. A changed JD or profile makes the old assessment
+  stale; the record is recomputed instead of silently reused. The file contains
+  no copied candidate profile text and is not a substitute for the user's
+  manual review of a posting.
+- The assessment is a shared read contract, not a write-only audit log. `/materials`
+  verifies and reads the current record before ordering CV evidence and building
+  the Cover Letter/application-email blueprints; `/interview` reads it through
+  `python3 -m tools.job_materials assessment show --job-id <JOB-ID>` and uses its
+  strengths/gaps for consistency and question preparation. The score snapshot
+  also preserves the language requirement, gate result and explanatory note, so
+  downstream materials can see the same PASS/FLAG/FAIL/REVIEW conclusion. Missing
+  or stale records are surfaced as `missing_or_stale`; downstream agents must not
+  quietly invent a replacement fit judgement.
 - Agent tasks are executable as `list -> show -> complete` and must not ask a
   lower-capability model to rediscover a portal, reinterpret fetch status, or
   invent missing evidence.

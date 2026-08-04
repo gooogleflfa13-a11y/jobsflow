@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from tools.io_utils import atomic_write_json
+from tools.language_gate import parse_candidate_languages
+from tools.salary_parsing import AMBIGUOUS, INVALID, PARSED, parse_salary_range
 
 REPO = Path(__file__).resolve().parent
 
@@ -798,6 +800,11 @@ def build_queries_config(
             # neutral when the user has not supplied a constraint, while still
             # changing eligibility/work/pay dimensions when setup captured one.
             "minimum_salary": profession.get("minimum_salary"),
+            "minimum_salary_currency": profession.get("minimum_salary_currency"),
+            "minimum_salary_period": profession.get("minimum_salary_period"),
+            "minimum_salary_parse_status": profession.get("minimum_salary_parse_status"),
+            "minimum_salary_parse_warning": profession.get("minimum_salary_parse_warning"),
+            "candidate_languages": list(profession.get("candidate_languages") or []),
             "max_relevant_years": profession.get("max_relevant_years"),
             "schedule_risk_keywords": list(profession.get("schedule_risk_keywords") or []),
             "qualification_keywords": list(profession.get("qualification_keywords") or []),
@@ -927,18 +934,36 @@ def generate_config(
     email = extract_email(resume_text) or ask("Your email", "your.email@example.com")
     education = extract_education(resume_text)
     languages = extract_languages(resume_text)
+    if sys.stdin.isatty():
+        languages = ask(
+            "Languages you can work in and honest levels (e.g. English C1; Cantonese native)",
+            languages,
+        )
+    prof_languages = parse_candidate_languages(languages)
 
     prof = classify_profession(intent, resume_text)
+    prof["candidate_languages"] = prof_languages
     prof["semantic_profile"] = semantic_profile_for_level(semantic_upper_level)
     # Parse only explicit, machine-checkable constraints from the user's intent;
     # missing values stay unknown rather than being guessed from résumé history.
     intent_lower = str(intent or "").casefold()
-    salary_match = re.search(
-        r"(?:minimum|min|at\s+least|最低|不少于)\D{0,12}(?:hkd|hk\$|usd|rmb|薪资)?\s*([\d,]{3,})",
-        intent_lower,
-    )
-    if salary_match:
-        prof["minimum_salary"] = int(salary_match.group(1).replace(",", ""))
+    salary_marker = re.search(r"(?:minimum|min|at\s+least|最低|不少于|至少)", intent_lower)
+    if salary_marker:
+        salary = parse_salary_range(intent_lower[salary_marker.end() : salary_marker.end() + 80])
+        if salary.status == PARSED and salary.low is not None:
+            prof["minimum_salary"] = int(salary.low) if float(salary.low).is_integer() else salary.low
+            if salary.currency:
+                prof["minimum_salary_currency"] = salary.currency
+            if salary.period:
+                prof["minimum_salary_period"] = salary.period
+        elif salary.status in {AMBIGUOUS, INVALID}:
+            prof["minimum_salary"] = None
+            prof["minimum_salary_parse_status"] = salary.status
+            prof["minimum_salary_parse_warning"] = salary.reason or "请补充币种或明确千位/小数分隔方式"
+            print(
+                "[warning] Minimum salary was not recorded because the number format is "
+                f"{salary.status}; add a currency/period or enter an unambiguous value."
+            )
     max_years_match = re.search(
         r"(?:up\s+to|no\s+more\s+than|<=|不超过)\s*(\d+)\s*(?:years?|年)",
         intent_lower,
@@ -1052,6 +1077,7 @@ def generate_config(
         "email": email,
         "education": education,
         "languages": languages,
+        "language_profile": prof_languages,
         "location": intent,
     }
     config_path = personal_config_path(REPO)

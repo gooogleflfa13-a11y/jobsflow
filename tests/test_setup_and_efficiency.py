@@ -92,6 +92,65 @@ def test_explicit_setup_constraints_reach_scoring_profile():
     assert "薪资" in neutral.reason
 
 
+def test_salary_scoring_parses_localized_range_and_surfaces_ambiguous_input():
+    profile = {
+        "core_keywords": ["backend"],
+        "evidence_keywords": ["python"],
+        "preferred_industry_keywords": ["technology"],
+        "minimum_salary": 30000,
+        "weights": {"resume": 0.35, "eligibility": 0.2, "direction": 0.2, "industry": 0.1, "work": 0.1, "pay": 0.05},
+    }
+    parsed = score_job(
+        title="Backend Engineer",
+        company="Acme",
+        teaser="Build payment APIs with Python.",
+        salary="HKD 28,000–32,000 monthly",
+        profile=profile,
+    )
+    assert parsed.salary_parse_status == "parsed"
+    assert not any(item.get("kind") == "salary" for item in parsed.gap_items)
+
+    ambiguous = score_job(
+        title="Backend Engineer",
+        company="Acme",
+        teaser="Build payment APIs with Python.",
+        salary="30,000",
+        profile=profile,
+    )
+    assert ambiguous.salary_parse_status == "ambiguous"
+    assert any(item.get("kind") == "salary" for item in ambiguous.gap_items)
+    assert "薪资格式存在歧义" in ambiguous.reason
+
+
+def test_language_gate_is_applied_before_final_score():
+    profile = {
+        "core_keywords": ["backend"],
+        "evidence_keywords": ["python"],
+        "preferred_industry_keywords": ["technology"],
+        "candidate_languages": [{"language": "English", "level": "B2"}],
+        "weights": {"resume": 0.35, "eligibility": 0.2, "direction": 0.2, "industry": 0.1, "work": 0.1, "pay": 0.05},
+    }
+    failed = score_job(
+        title="Backend Engineer",
+        company="Acme",
+        teaser="Fluent French required. Build Python APIs.",
+        profile=profile,
+    )
+    flagged = score_job(
+        title="Backend Engineer",
+        company="Acme",
+        teaser="Must be fluent in English. Build Python APIs.",
+        profile=profile,
+    )
+
+    assert failed.language_gate == "FAIL"
+    assert failed.score <= 2.9
+    assert failed.tier == "剔除"
+    assert any(item.get("severity") == "hard_fail" for item in failed.gap_items)
+    assert flagged.language_gate == "FLAG"
+    assert flagged.score > failed.score
+
+
 def test_semantic_profile_calibration_is_explicit_and_private_configurable():
     assert setup.normalize_semantic_profile_level("低") == "low"
     assert setup.normalize_semantic_profile_level("high") == "high"

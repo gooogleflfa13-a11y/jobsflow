@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from tools.io_utils import atomic_write_json, atomic_write_text
+from tools.language_gate import FAIL as LANGUAGE_FAIL
+from tools.language_gate import FLAG as LANGUAGE_FLAG
+from tools.language_gate import PASS as LANGUAGE_PASS
+from tools.language_gate import evaluate_language_gate
 
 
 QUESTION_RULES = [
@@ -99,6 +103,7 @@ def build_application_preflight(
     jd_text: str,
     *,
     known_answers: dict[str, Any] | None = None,
+    candidate_languages: Any = None,
 ) -> dict[str, Any]:
     jd = jd_text or ""
     known = {
@@ -109,6 +114,10 @@ def build_application_preflight(
     requirements = []
     questions = []
     review_items = []
+    warnings = []
+    language_gate = None
+    if candidate_languages is not None:
+        language_gate = evaluate_language_gate(jd, candidate_languages)
 
     for field_id, category, pattern, question in QUESTION_RULES:
         match = re.search(pattern, jd, re.I)
@@ -128,6 +137,11 @@ def build_application_preflight(
             questions.append(item)
 
     for field_id, category, pattern, instruction in REVIEW_RULES:
+        # When a structured language profile is available, the dedicated gate
+        # below replaces the old generic review item. This prevents a clean
+        # language PASS from still blocking /apply.
+        if field_id == "language" and language_gate is not None:
+            continue
         match = re.search(pattern, jd, re.I)
         if not match:
             continue
@@ -144,6 +158,26 @@ def build_application_preflight(
         if not answer:
             review_items.append(item)
 
+    if language_gate is not None and language_gate.get("status") != LANGUAGE_PASS:
+        status = str(language_gate.get("status") or "REVIEW")
+        item = {
+            "id": "language_gate",
+            "category": "language",
+            "evidence": str(language_gate.get("note") or ""),
+            "status": "failed" if status == LANGUAGE_FAIL else "needs_profile_review",
+            "answer": "",
+            "instruction": (
+                "语言门失败：不得把未声明语言写入材料；如确实具备该语言，请先更新私有语言档案。"
+                if status == LANGUAGE_FAIL
+                else "核对 JD 语言要求与私有语言档案；语言水平偏高时由用户决定是否继续。"
+            ),
+        }
+        requirements.append(item)
+        if status == LANGUAGE_FLAG:
+            warnings.append(item)
+        else:
+            review_items.append(item)
+
     if questions:
         next_action = "ask_user"
     elif review_items:
@@ -156,6 +190,7 @@ def build_application_preflight(
         "requirements": requirements,
         "questions": questions,
         "review_items": review_items,
+        "warnings": warnings,
         "ready_for_apply": not questions and not review_items,
         "next_action": next_action,
         "model_contract": {
@@ -165,6 +200,7 @@ def build_application_preflight(
             "instructions": [
                 "Ask every question exactly once when next_action=ask_user.",
                 "Verify every review item against the fact-checked profile.",
+                "Show warnings to the user; a language FLAG is not an automatic rejection.",
                 "Store answers through the preflight answer command.",
                 "Do not draft final materials while ready_for_apply is false.",
             ],
@@ -216,6 +252,14 @@ def write_application_preflight(package: Path, value: dict[str, Any]) -> None:
             f"  - JD evidence: {item['evidence']}",
         ]
     if not value.get("review_items"):
+        lines.append("- 无")
+    lines += ["", "## Warnings (do not silently ignore)"]
+    for item in value.get("warnings") or []:
+        lines += [
+            f"- **{item['id']}**: {item['instruction']}",
+            f"  - JD evidence: {item['evidence']}",
+        ]
+    if not value.get("warnings"):
         lines.append("- 无")
     lines += [
         "",

@@ -113,6 +113,20 @@ python3 -m tools.job_materials company set \
 | `base_master_ref.txt` | Reference to the fact-checked A–F master |
 | `jd_full.md` | Full JD and provenance |
 
+`JobSearch_2026/02_Tracker/job_assessments/<hash>.json` is the shared fit
+record written by scanning and read by downstream stages. The tailor pipeline
+verifies its JD/profile hashes before use, then places its strengths and gaps in
+`tailor_plan.json.job_assessment`:
+
+- CV bullet ordering starts from persisted supported strengths;
+- the Cover Letter and application-email blueprints use the same evidence order;
+- gaps remain review items and are never converted into new claims;
+- `python3 -m tools.job_materials assessment show --job-id <JOB-ID>` exposes the
+  same verified record to interview preparation.
+
+If the record is missing or stale, the output says `missing_or_stale`; a model
+must not silently replace it with a second fit score.
+
 `tailor_plan.json.low_model_contract` defines the required execution order so a
 less capable model cannot skip preflight, company research, evidence mapping,
 fact checking, the optional role/industry-match slot or PDF validation.

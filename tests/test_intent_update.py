@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from tools.update_intent import apply_proposal, create_proposal, save_proposal
+from tools.update_intent import _extract_constraints, apply_proposal, create_proposal, save_proposal
 
 
 def _write_private_profile(root):
@@ -96,3 +96,26 @@ def test_add_can_update_explicit_constraints_without_broadening_keywords(tmp_pat
     assert saved["scoring_profile"]["minimum_salary"] == 30000
     assert "weekend" in saved["scoring_profile"]["schedule_risk_keywords"]
     assert saved["relevance_keywords"] == ["backend"]
+
+
+def test_localized_salary_constraint_keeps_currency_and_period():
+    constraints = _extract_constraints("minimum 30.000 EUR per month")
+
+    assert constraints["minimum_salary"] == 30000
+    assert constraints["minimum_salary_currency"] == "EUR"
+    assert constraints["minimum_salary_period"] == "monthly"
+
+
+def test_ambiguous_salary_constraint_is_explicitly_reviewable(tmp_path):
+    profile = _write_private_profile(tmp_path)
+    proposal = create_proposal(tmp_path, operation="add", text="minimum 30,000")
+
+    constraints = proposal["diff"]["constraints"]
+    assert constraints["minimum_salary"] is None
+    assert constraints["minimum_salary_parse_status"] == "ambiguous"
+
+    save_proposal(tmp_path, proposal)
+    apply_proposal(tmp_path)
+    saved = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
+    assert saved["scoring_profile"]["minimum_salary"] is None
+    assert saved["scoring_profile"]["minimum_salary_parse_status"] == "ambiguous"

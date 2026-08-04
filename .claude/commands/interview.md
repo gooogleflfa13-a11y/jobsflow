@@ -38,6 +38,25 @@ v1 preps for a **specific application**. Generic no-target practice is out of sc
    - `.claude/skills/job-application-assistant/02-behavioral-profile.md`
    - `.claude/skills/job-application-assistant/04-job-evaluation.md`
 
+5. **Load the persisted job assessment before doing any new fit analysis.** For a
+   tracked job run:
+
+   ```bash
+   python3 -m tools.job_materials assessment show --job-id <JOB-ID>
+   ```
+
+   Or pass the selected materials package with `--package`. The command reads
+   `JobSearch_2026/02_Tracker/job_assessments/<hash>.json`, verifies the current
+   JD and scoring-profile hashes, and returns the structured strengths, gaps,
+   language-gate result and final score. A non-zero result means the record is
+   missing or stale; state that explicitly and ask for a fresh scan/review rather
+   than silently re-scoring the JD as if it were the persisted assessment.
+
+   Carry the returned `priority_strengths` and `interview_focus_gaps` into the
+   prep pack. The assessment is the shared fit judgement: do not replace it with
+   a second informal fit score. Gaps produce honest bridge questions, never
+   invented experience.
+
 ---
 
 ## Step 2: Research the Company (Interview-Focused)
@@ -60,7 +79,7 @@ Assemble a stage-appropriate prep document with these sections:
 ### 1. Likely questions
 Derive from four sources, in priority order:
 1. **Recorded feedback from earlier stages** (`outcome.md`) - anything flagged, doubted, or left unresolved will come back
-2. **The fit evaluation's gaps** - the requirements where the profile is weakest are the likeliest probes. For each, prepare an honest bridge answer per `07`'s "You don't have [X]" pattern: acknowledge, connect adjacent experience, show the learning path. **Never prepare an answer that invents experience.**
+2. **The persisted job assessment's `interview_focus_gaps`** - the requirements where the profile is weakest are the likeliest probes. For each, prepare an honest bridge answer per `07`'s "You don't have [X]" pattern: acknowledge, connect adjacent experience, show the learning path. **Never prepare an answer that invents experience.** If the assessment command reported missing/stale, mark this input as unresolved instead of creating a replacement score.
 3. **The posting's stated requirements** - competency by competency
 4. **The stage type** - phone screens get motivation and timeline questions; technical rounds get the posting's stack; final rounds get values, salary, and "any reservations" questions
 
@@ -71,6 +90,11 @@ Match the ready-made STAR examples in `07-interview-prep.md` to the likely quest
 
 ### 3. Consistency brief
 A short list of the specific claims the submitted CV and cover letter make (achievements, numbers, skills emphasized) that the interviewer is most likely to probe. The rule stated plainly: **no claim in the room that isn't on the paper, and every claim on the paper must be defensible in depth.**
+
+Start this section with the assessment's `priority_strengths`, then reconcile them
+with the submitted CV/CL. If a persisted strength is not present in the submitted
+materials, treat it as a preparation lead—not permission to add a new claim during
+the interview.
 
 ### 4. Tough questions, customized
 The relevant entries from `07`'s tough-question list with per-application answers - "Why this company specifically?" must use the verified hooks from Step 2, never a generic line.
