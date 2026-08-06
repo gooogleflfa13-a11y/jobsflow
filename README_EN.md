@@ -27,6 +27,8 @@ checked against the minimum of three years rather than being capped as if five
 years were mandatory. Regression tests cover English and Chinese ranges, `+`
 suffixes, Chinese experience wording, and date exclusion.
 
+The same update also adds several speed improvements without changing the workflow: two-pass scoring reuses scored artifacts and the URL-keyed JD cache; LinkedIn details are fetched serially by one long-lived Bun worker; Playwright deep fetches reuse one browser/context per scoring cycle and short-cache WAF, CAPTCHA, and timeout failures; Google Sheets pushes append new rows and update only changed rows with local formatting. First-time fetches remain subject to portal latency, rate limits, and CAPTCHA; a schema change triggers one safe full sync.
+
 ## 🆕 Update · 2026-08-03
 
 The scan path now uses **portal-level parallel workers with serial queries inside each portal**. LinkedIn, JobsDB, and CTgoodjobs each run one worker, so the three portals can be searched at the same time while each portal keeps its original query order and pacing.
