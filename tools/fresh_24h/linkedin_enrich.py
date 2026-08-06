@@ -52,6 +52,21 @@ class EnrichResult:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+def _result_from_batch_payload(payload: dict[str, Any], job_id: str) -> EnrichResult:
+    description = str(payload.get("description") or "").strip()
+    return EnrichResult(
+        ok=bool(description),
+        job_id=str(payload.get("id") or job_id),
+        description=description,
+        seniority=payload.get("seniority"),
+        employment_type=payload.get("employmentType"),
+        job_function=payload.get("jobFunction"),
+        industries=payload.get("industries"),
+        error=None if description else "empty_description",
+        raw=payload,
+    )
+
+
 def extract_linkedin_job_id(url_or_id: str) -> str | None:
     s = (url_or_id or "").strip()
     if not s:
@@ -142,6 +157,85 @@ def fetch_linkedin_detail(
     )
 
 
+def fetch_linkedin_details_batch(
+    urls_or_ids: list[str],
+    *,
+    repo: Path | None = None,
+    timeout: int = DEEP_TIMEOUT_S,
+    delay_s: float = DEEP_SLEEP_S,
+) -> dict[str, EnrichResult] | None:
+    """Fetch LinkedIn details through one long-lived Bun detail worker.
+
+    The worker keeps the HTTP/runtime initialization alive while processing
+    requests serially, preserving portal rate limits. ``None`` means the
+    batch protocol itself failed; callers should fall back to the established
+    one-job detail path rather than silently dropping descriptions.
+    """
+    repo = (repo or REPO_DEFAULT).resolve()
+    cli = repo / ".agents/skills/linkedin-search/cli/src/cli.ts"
+    requests: list[tuple[str, str]] = []
+    seen_job_ids: set[str] = set()
+    for value in urls_or_ids:
+        job_id = extract_linkedin_job_id(value)
+        if job_id and job_id not in seen_job_ids:
+            seen_job_ids.add(job_id)
+            requests.append((job_id, value))
+    if not requests:
+        return {}
+
+    delay_ms = max(0, int(round(float(delay_s) * 1000)))
+    input_text = "".join(
+        json.dumps(
+            {"request_id": str(index), "job_id": job_id},
+            ensure_ascii=False,
+        )
+        + "\n"
+        for index, (job_id, _value) in enumerate(requests)
+    )
+    # Include one small allowance for process startup and JSON parsing. The
+    # per-job HTTP timeout remains enforced by the Bun helper itself.
+    total_timeout = max(30.0, float(timeout) * len(requests) + delay_s * len(requests) + 10.0)
+    cmd = ["bun", "run", str(cli), "detail-batch", "--delay-ms", str(delay_ms)]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo),
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=total_timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    by_request: dict[str, EnrichResult] = {}
+    for line in (proc.stdout or "").splitlines():
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        request_id = str(item.get("request_id") or "")
+        if not request_id.isdigit():
+            continue
+        position = int(request_id)
+        if position < 0 or position >= len(requests):
+            continue
+        job_id = requests[position][0]
+        if item.get("ok") and isinstance(item.get("payload"), dict):
+            by_request[job_id] = _result_from_batch_payload(item["payload"], job_id)
+        else:
+            by_request[job_id] = EnrichResult(
+                ok=False,
+                job_id=job_id,
+                error=str(item.get("error") or "detail_batch_failed")[:300],
+            )
+    if len(by_request) != len(requests):
+        return None
+    return by_request
+
+
 def enrich_hits_shallow(
     hits: list[dict[str, Any]],
     *,
@@ -160,6 +254,7 @@ def enrich_hits_shallow(
     only_sources = only_sources or {"linkedin"}
     stats: dict[str, Any] = {
         "mode": "shallow",
+        "worker": "detail_batch",
         "candidates": 0,
         "attempted": 0,
         "ok": 0,
@@ -167,6 +262,7 @@ def enrich_hits_shallow(
         "skipped_cap": 0,
         "skipped_non_li": 0,
         "errors": [],
+        "batch_fallback": False,
     }
 
     # collect indices to enrich
@@ -186,11 +282,29 @@ def enrich_hits_shallow(
         else:
             stats["skipped_cap"] += 1
 
+    urls = [str(hits[i].get("url") or "") for i in to_do]
+    batch_results = fetch_linkedin_details_batch(
+        urls,
+        repo=repo,
+        timeout=SHALLOW_TIMEOUT_S,
+        delay_s=sleep_s,
+    )
+    if batch_results is None:
+        stats["worker"] = "detail_single_fallback"
+        stats["batch_fallback"] = True
+
     for n, i in enumerate(to_do):
         h = hits[i]
         url = h.get("url") or ""
         stats["attempted"] += 1
-        res = fetch_linkedin_detail(url, repo=repo, timeout=SHALLOW_TIMEOUT_S)
+        job_id = extract_linkedin_job_id(url)
+        res = (
+            batch_results.get(job_id)
+            if batch_results is not None and job_id
+            else None
+        )
+        if res is None:
+            res = fetch_linkedin_detail(url, repo=repo, timeout=SHALLOW_TIMEOUT_S)
         if res.ok and res.description:
             teaser = res.description[:desc_chars]
             h["teaser"] = teaser
@@ -210,7 +324,7 @@ def enrich_hits_shallow(
             h["_enrich"] = {"mode": "shallow", "ok": False, "error": res.error}
             stats["failed"] += 1
             stats["errors"].append({"url": url[:120], "error": res.error})
-        if n + 1 < len(to_do) and sleep_s > 0:
+        if batch_results is None and n + 1 < len(to_do) and sleep_s > 0:
             time.sleep(sleep_s)
 
     return stats

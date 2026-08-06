@@ -35,6 +35,7 @@ sys.path.insert(0, str(REPO))
 from careerops_quickscore import (  # noqa: E402
     SHEET_HEADERS,
     build_tracker_row,
+    load_scoring_profile,
     score_job,
 )
 from job_id import allocate_ids, max_prefix_from_ids  # noqa: E402
@@ -56,9 +57,13 @@ from linkedin_enrich import (  # noqa: E402
 )
 from two_pass_score import (  # noqa: E402
     PASS_EXTRA,
+    build_scored_artifact_metadata,
+    load_reusable_scored_artifact,
     pending_semantic_rows,
     pending_semantic_tasks,
     run_two_pass,
+    scored_artifact_path,
+    write_csv as write_two_pass_csv,
 )
 from tools.job_urls import normalize_job_url  # noqa: E402
 from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
@@ -68,7 +73,7 @@ from tools.fresh_24h.local_tracker import (  # noqa: E402
     merge_scored_rows,
     read_tracker,
 )
-from tools.io_utils import atomic_write_stream, atomic_write_text  # noqa: E402
+from tools.io_utils import atomic_write_json, atomic_write_stream, atomic_write_text  # noqa: E402
 from tools.spreadsheet_safety import neutralize_spreadsheet_formula  # noqa: E402
 
 # Headers we always keep on merge read/write (base + two-pass extras).
@@ -137,6 +142,61 @@ def latest_fresh_csv(tracker: Path) -> Path | None:
     files = sorted(tracker.glob("fresh_24h_????-??-??.csv"), reverse=True)
     files = [f for f in files if "_scored" not in f.name and "_run" not in f.name]
     return files[0] if files else None
+
+
+def _filter_scored_rows_against_existing(
+    rows: list[dict], existing_urls: set[str]
+) -> tuple[list[dict], int]:
+    """Reuse scored rows while preserving the push-side URL de-dup contract."""
+    output: list[dict] = []
+    skipped = 0
+    for raw in rows:
+        row = dict(raw)
+        url = normalize_job_url(
+            str(row.get("链接") or row.get("url") or ""),
+            source=str(row.get("来源") or row.get("source") or ""),
+        )
+        if url and url in existing_urls:
+            skipped += 1
+            continue
+        if url:
+            row["链接"] = url
+        output.append(row)
+    return output, skipped
+
+
+def _persist_scored_artifact(
+    source_csv: Path,
+    rows: list[dict],
+    *,
+    profile: dict,
+    min_score: float,
+    max_deep: int,
+    meta: dict,
+    repo: Path,
+) -> None:
+    """Persist a fresh two-pass result so a later push can reuse it."""
+    try:
+        scored_path = scored_artifact_path(source_csv)
+        write_two_pass_csv(scored_path, rows, repo=repo)
+        artifact = build_scored_artifact_metadata(
+            source_csv=source_csv,
+            profile=profile,
+            gate_pass1=min_score,
+            min_final=min_score,
+            max_deep=max_deep,
+            jd_fingerprints=meta.get("jd_fingerprints") or {},
+            repo=repo,
+        )
+        atomic_write_json(
+            scored_path.with_suffix(".json"),
+            {"artifact": artifact, "producer": "push_to_gsheet"},
+        )
+        print(f"two-pass artifact: saved {scored_path.name} for later push reuse")
+    except (OSError, TypeError, ValueError) as exc:
+        # This is an optimization, not a reason to discard an otherwise valid
+        # push. The next invocation will simply rescore if the cache is absent.
+        print(f"WARN: could not persist two-pass reuse artifact: {exc}", file=sys.stderr)
 
 
 def load_hits(csv_path: Path) -> list[dict]:
@@ -222,12 +282,14 @@ def score_new_hits(
     enrich_max: int = SHALLOW_MAX_JOBS,
     enrich_sleep: float = SHALLOW_SLEEP_S,
     repo: Path | None = None,
+    profile: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Legacy single-pass: score hits; return only NEW urls with score >= min_score.
 
     Optional shallow LinkedIn detail enrichment before scoring (入表浅富化).
     """
     existing_urls = existing_urls or set()
+    scoring_profile = profile if profile is not None else load_scoring_profile(repo or REPO)
     scored = []
     dropped = []
     skipped_dup = 0
@@ -270,6 +332,7 @@ def score_new_hits(
             salary=h.get("salary") or "",
             track_hint=h.get("track_hint") or "F",
             soft_flags=h.get("soft_flags") or "",
+            profile=scoring_profile,
             repo=repo or REPO,
             jd_url=h.get("url") or "",
         )
@@ -314,9 +377,9 @@ def score_new_hits(
     return draft_rows, meta
 
 
-def read_existing_rows(ws) -> list[dict]:
+def read_existing_rows(ws, *, values: list[list] | None = None) -> list[dict]:
     """Load sheet rows keeping SHEET_HEADERS + PASS_EXTRA + any extra sheet cols."""
-    values = ws.get_all_values()
+    values = values if values is not None else ws.get_all_values()
     if not values:
         return []
     header = values[0]
@@ -335,6 +398,70 @@ def read_existing_rows(ws) -> list[dict]:
         ensure_batch_columns(row)
         rows.append(row)
     return rows
+
+
+def _sheet_row_values(row: dict, headers: list[str]) -> list:
+    return [neutralize_spreadsheet_formula(row.get(header, "")) for header in headers]
+
+
+def incremental_sheet_sync(
+    ws,
+    *,
+    headers: list[str],
+    existing_rows: list[dict],
+    new_rows: list[dict],
+    previous_rows: list[dict],
+) -> dict[str, int | bool]:
+    """Append new rows and update only changed existing rows.
+
+    New rows are inserted at row 2 to preserve the existing "new batch first"
+    presentation. Existing rows retain their positions; only rows changed by
+    batch demotion or a canonicalization update are sent to Sheets. The
+    caller falls back to a full replacement when the sheet header changed.
+    """
+    changed_indices = [
+        index
+        for index, row in enumerate(existing_rows)
+        if index >= len(previous_rows) or row != previous_rows[index]
+    ]
+    if not changed_indices and not new_rows:
+        return {"changed": False, "inserted": 0, "updated": 0}
+
+    inserted = len(new_rows)
+    if new_rows:
+        values = [_sheet_row_values(row, headers) for row in new_rows]
+        ws.insert_rows(
+            values,
+            row=2,
+            value_input_option="RAW",
+            inherit_from_before=False,
+        )
+
+    if changed_indices:
+        end_col = _col_letter(len(headers) - 1)
+        updates = []
+        for index in changed_indices:
+            sheet_row = index + 2 + inserted
+            updates.append(
+                {
+                    "range": f"A{sheet_row}:{end_col}{sheet_row}",
+                    "values": [_sheet_row_values(existing_rows[index], headers)],
+                }
+            )
+        if hasattr(ws, "batch_update"):
+            ws.batch_update(updates, raw=False, value_input_option="RAW")
+        else:
+            for item in updates:
+                ws.update(
+                    item["range"],
+                    item["values"],
+                    value_input_option="RAW",
+                )
+    return {
+        "changed": True,
+        "inserted": inserted,
+        "updated": len(changed_indices),
+    }
 
 
 def apply_beige_formatting(ws, n_data_rows: int, headers: list[str]) -> None:
@@ -415,6 +542,63 @@ def _apply_beige_gspread(ws, n_data_rows: int, headers: list[str]) -> None:
     if requests:
         sh.batch_update({"requests": requests})
         print(f"OK format: cleared old beige; painted {sum(1 for r in requests if r.get('repeatCell',{}).get('cell',{}).get('userEnteredFormat',{}).get('backgroundColor')==BEIGE_RGB)} new rows")
+
+
+def apply_beige_formatting_incremental(
+    ws,
+    *,
+    headers: list[str],
+    inserted_rows: int,
+    demoted_indices: list[int],
+) -> bool:
+    """Change backgrounds only for rows touched by an incremental sync."""
+    if not inserted_rows and not demoted_indices:
+        return False
+    requests = []
+    end_col = len(headers)
+    for row_index in range(2, inserted_rows + 2):
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": row_index - 1,
+                        "endRowIndex": row_index,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": end_col,
+                    },
+                    "cell": {"userEnteredFormat": {"backgroundColor": BEIGE_RGB}},
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            }
+        )
+    for old_index in demoted_indices:
+        row_index = old_index + inserted_rows + 2
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": row_index - 1,
+                        "endRowIndex": row_index,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": end_col,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 1, "green": 1, "blue": 1}
+                        }
+                    },
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            }
+        )
+    try:
+        ws.spreadsheet.batch_update({"requests": requests})
+        return True
+    except Exception as exc:
+        print(f"WARN incremental format: {exc}", file=sys.stderr)
+        return False
 
 
 def _col_letter(idx: int) -> str:
@@ -570,6 +754,9 @@ def push_local_only(
     mode: str,
     legacy_single_pass: bool,
     allow_pending_semantic: bool,
+    profile: dict | None = None,
+    reusable_rows: list[dict] | None = None,
+    reusable_meta: dict | None = None,
 ) -> int:
     """Score and merge a selection into the local main CSV without Sheets."""
     tracker_path = latest_tracker_path(REPO, SHEET_HEADERS)
@@ -602,15 +789,47 @@ def push_local_only(
             enrich_shallow=True,
             enrich_sleep=enrich_sleep,
             repo=REPO,
+            profile=profile,
         )
+    elif reusable_rows is not None:
+        rows, skipped_dup = _filter_scored_rows_against_existing(
+            reusable_rows, existing_urls
+        )
+        meta = {
+            "mode": "two_pass_reused",
+            "min_score": min_score,
+            "max_deep": max_deep,
+            "kept": len(rows),
+            "skipped_dup_url": skipped_dup,
+            "reused_artifact": True,
+            "artifact": (reusable_meta or {}).get("artifact", {}),
+        }
+        if _reject_pending_semantic(
+            rows,
+            allow=allow_pending_semantic,
+            context="local-only push",
+        ):
+            return 2
+        allocate_ids(rows, baseline_max=baseline, existing_ids=existing_id_map)
+        _persist_deep_jds(rows, REPO)
     else:
         rows, meta = run_two_pass(
             hits_new,
             gate_pass1=min_score,
             min_final=min_score,
             repo=REPO,
+            profile=profile,
             sleep_s=enrich_sleep,
             max_deep=max_deep,
+        )
+        _persist_scored_artifact(
+            csv_path,
+            rows,
+            profile=profile or {},
+            min_score=min_score,
+            max_deep=max_deep,
+            meta=meta,
+            repo=REPO,
         )
         if _reject_pending_semantic(
             rows,
@@ -728,8 +947,25 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: no fresh_24h CSV found", file=sys.stderr)
         return 2
 
-    hits = load_hits(csv_path)
-    if not hits:
+    scoring_profile = load_scoring_profile(REPO) if use_two_pass else None
+    reusable_rows: list[dict] | None = None
+    reusable_meta: dict | None = None
+    if use_two_pass:
+        reusable = load_reusable_scored_artifact(
+            csv_path,
+            repo=REPO,
+            profile=scoring_profile or {},
+            min_score=args.min_score,
+            max_deep=args.max_deep,
+        )
+        if reusable is not None:
+            reusable_rows, reusable_meta = reusable
+            print(
+                f"two-pass: reusing scored artifact {csv_path.stem}_twopass_scored.csv "
+                f"({len(reusable_rows)} scored row(s); no re-score/deep fetch)"
+            )
+    hits = [] if reusable_rows is not None else load_hits(csv_path)
+    if not hits and reusable_rows is None:
         print("ERROR: empty CSV", file=sys.stderr)
         return 2
 
@@ -758,6 +994,9 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             legacy_single_pass=not use_two_pass,
             allow_pending_semantic=args.allow_pending_semantic,
+            profile=scoring_profile,
+            reusable_rows=reusable_rows,
+            reusable_meta=reusable_meta,
         )
 
     cred = args.credentials or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -798,8 +1037,13 @@ def main(argv: list[str] | None = None) -> int:
     ws = existing_ws.get(title)
 
     existing_rows: list[dict] = []
+    previous_rows: list[dict] = []
+    current_sheet_headers: list[str] = []
     if merge and ws is not None:
-        existing_rows = read_existing_rows(ws)
+        sheet_values = ws.get_all_values()
+        current_sheet_headers = list(sheet_values[0]) if sheet_values else []
+        existing_rows = read_existing_rows(ws, values=sheet_values)
+        previous_rows = [dict(row) for row in existing_rows]
         print(f"merge: loaded {len(existing_rows)} existing rows from {title}")
         demote_previous_batch(existing_rows)
     elif ws is not None and not merge:
@@ -832,30 +1076,70 @@ def main(argv: list[str] | None = None) -> int:
         baseline[pref] = max(baseline.get(pref, 0), mx)
 
     if use_two_pass:
-        # Filter dups first (URLs normalized)
-        hits_new = []
-        skipped_dup = 0
-        for h in hits:
-            url = _normalize_hit_url(h)
-            if url and url in existing_urls:
-                skipped_dup += 1
-                continue
-            if is_linkedin_url(url) and not (h.get("source") or "").strip():
-                h["source"] = "linkedin"
-            hits_new.append(h)
-        print(
-            f"two-pass: input={len(hits_new)} (skip_dup={skipped_dup}) "
-            f"gate={args.min_score} max_deep={args.max_deep} → deep JD → rescore"
-        )
-        print("  (materials/tailor NOT run — only when you make a package)")
-        new_rows, tp_meta = run_two_pass(
-            hits_new,
-            gate_pass1=args.min_score,
-            min_final=args.min_score,
-            repo=REPO,
-            sleep_s=args.enrich_sleep,
-            max_deep=args.max_deep,
-        )
+        if reusable_rows is not None:
+            new_rows, skipped_dup = _filter_scored_rows_against_existing(
+                reusable_rows, existing_urls
+            )
+            tp_meta = {
+                "mode": "two_pass_reused",
+                "reused_artifact": True,
+                "artifact": (reusable_meta or {}).get("artifact", {}),
+            }
+            score_meta = {
+                "mode": "two_pass_reused",
+                "min_score": args.min_score,
+                "max_deep": args.max_deep,
+                "kept": len(new_rows),
+                "skipped_dup_url": skipped_dup,
+                **tp_meta,
+            }
+            print(
+                f"two-pass reused: rows={len(new_rows)} (skip_dup={skipped_dup}) "
+                "no deep fetch/no rescore"
+            )
+        else:
+            # Filter dups first (URLs normalized)
+            hits_new = []
+            skipped_dup = 0
+            for h in hits:
+                url = _normalize_hit_url(h)
+                if url and url in existing_urls:
+                    skipped_dup += 1
+                    continue
+                if is_linkedin_url(url) and not (h.get("source") or "").strip():
+                    h["source"] = "linkedin"
+                hits_new.append(h)
+            print(
+                f"two-pass: input={len(hits_new)} (skip_dup={skipped_dup}) "
+                f"gate={args.min_score} max_deep={args.max_deep} → deep JD → rescore"
+            )
+            print("  (materials/tailor NOT run — only when you make a package)")
+            new_rows, tp_meta = run_two_pass(
+                hits_new,
+                gate_pass1=args.min_score,
+                min_final=args.min_score,
+                repo=REPO,
+                profile=scoring_profile,
+                sleep_s=args.enrich_sleep,
+                max_deep=args.max_deep,
+            )
+            _persist_scored_artifact(
+                csv_path,
+                new_rows,
+                profile=scoring_profile or {},
+                min_score=args.min_score,
+                max_deep=args.max_deep,
+                meta=tp_meta,
+                repo=REPO,
+            )
+            score_meta = {
+                "mode": "two_pass",
+                "min_score": args.min_score,
+                "max_deep": args.max_deep,
+                "kept": len(new_rows),
+                "skipped_dup_url": skipped_dup,
+                **tp_meta,
+            }
         if _reject_pending_semantic(
             new_rows,
             allow=args.allow_pending_semantic,
@@ -869,18 +1153,11 @@ def main(argv: list[str] | None = None) -> int:
             if r.pop("_below_final", False):
                 r["层级"] = "待审-深评偏低"
         _persist_deep_jds(new_rows, REPO)
-        score_meta = {
-            "mode": "two_pass",
-            "min_score": args.min_score,
-            "max_deep": args.max_deep,
-            "kept": len(new_rows),
-            "skipped_dup_url": skipped_dup,
-            **tp_meta,
-        }
-        print(
-            f"two-pass done: pass1_kept={tp_meta.get('pass1_kept')} "
-            f"final_kept={tp_meta.get('final_kept')} deep_ok={tp_meta.get('deep_ok')}"
-        )
+        if reusable_rows is None:
+            print(
+                f"two-pass done: pass1_kept={tp_meta.get('pass1_kept')} "
+                f"final_kept={tp_meta.get('final_kept')} deep_ok={tp_meta.get('deep_ok')}"
+            )
     else:
         new_rows, score_meta = score_new_hits(
             hits,
@@ -891,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
             enrich_max=args.enrich_max,
             enrich_sleep=args.enrich_sleep,
             repo=REPO,
+            profile=scoring_profile,
         )
         score_meta = {"mode": "legacy_single_pass", **score_meta}
 
@@ -940,15 +1218,53 @@ def main(argv: list[str] | None = None) -> int:
         atomic_write_stream(out, write_local, encoding="utf-8-sig", newline="")
         print(f"local scored csv: {out}")
 
-    # write sheet
-    replace_sheet_values_safely(ws, values)
-    try:
-        ws.freeze(rows=1)
-    except Exception:
-        pass
+    # Write only the rows touched by this push when the schema is unchanged.
+    # A header change (for example, enabling setup-derived columns) still uses
+    # the safe full replacement path once to migrate the sheet shape.
+    incremental_used = False
+    incremental_result: dict[str, int | bool] = {}
+    demoted_indices = [
+        index
+        for index, row in enumerate(existing_rows)
+        if index >= len(previous_rows) or row != previous_rows[index]
+    ]
+    if (
+        merge
+        and ws is not None
+        and current_sheet_headers == headers
+        and previous_rows is not None
+    ):
+        try:
+            incremental_result = incremental_sheet_sync(
+                ws,
+                headers=headers,
+                existing_rows=existing_rows,
+                new_rows=new_rows,
+                previous_rows=previous_rows,
+            )
+            incremental_used = True
+            print(
+                f"incremental sheet sync: inserted={incremental_result.get('inserted', 0)} "
+                f"updated={incremental_result.get('updated', 0)}"
+            )
+        except Exception as exc:
+            print(f"WARN incremental sync unavailable; full safe write: {exc}", file=sys.stderr)
 
-    apply_beige_formatting(ws, len(combined), headers)
-    setup_status_formats(ws, len(combined), headers, sh=sh)
+    if not incremental_used:
+        replace_sheet_values_safely(ws, values)
+        try:
+            ws.freeze(rows=1)
+        except Exception:
+            pass
+        apply_beige_formatting(ws, len(combined), headers)
+        setup_status_formats(ws, len(combined), headers, sh=sh)
+    else:
+        apply_beige_formatting_incremental(
+            ws,
+            headers=headers,
+            inserted_rows=int(incremental_result.get("inserted", 0) or 0),
+            demoted_indices=demoted_indices,
+        )
 
     n_new = sum(1 for r in combined if r.get("本轮新增") == "是")
     n_old = len(combined) - n_new

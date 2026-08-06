@@ -6,7 +6,7 @@ export interface DetailOpts {
 }
 
 /** Accept a raw job ID, a job-view URL, or a job URN. */
-function normalizeId(input: string): string | null {
+export function normalizeId(input: string): string | null {
   const urn = input.match(/urn:li:jobPosting:(\d+)/)
   if (urn) return urn[1]
   const url = input.match(/-(\d{6,})(?:\?|$)/) || input.match(/\/(\d{6,})(?:\?|$)/)
@@ -16,6 +16,15 @@ function normalizeId(input: string): string | null {
   return null
 }
 
+/** Fetch and parse one detail record without writing to stdout. */
+export async function fetchDetail(input: string): Promise<ReturnType<typeof parseJobDetail>> {
+  const id = normalizeId(input)
+  if (!id) throw new Error(`Could not parse a job ID from "${input}"`)
+  const html = await htmlFetch(`${DETAIL_URL}/${id}`)
+  if (!html) throw new Error("Job not found")
+  return parseJobDetail(html, id)
+}
+
 export async function runDetail(opts: DetailOpts): Promise<number> {
   const id = normalizeId(opts.id)
   if (!id) {
@@ -23,12 +32,7 @@ export async function runDetail(opts: DetailOpts): Promise<number> {
     return 1
   }
   try {
-    const html = await htmlFetch(`${DETAIL_URL}/${id}`)
-    if (!html) {
-      writeError("Job not found", "NOT_FOUND")
-      return 1
-    }
-    const job = parseJobDetail(html, id)
+    const job = await fetchDetail(id)
 
     if (opts.format === "plain") {
       const lines = [
@@ -51,7 +55,8 @@ export async function runDetail(opts: DetailOpts): Promise<number> {
     }
     return 0
   } catch (e) {
-    writeError(e instanceof Error ? e.message : String(e), "DETAIL_FAILED")
+    const message = e instanceof Error ? e.message : String(e)
+    writeError(message, message === "Job not found" ? "NOT_FOUND" : "DETAIL_FAILED")
     return 1
   }
 }

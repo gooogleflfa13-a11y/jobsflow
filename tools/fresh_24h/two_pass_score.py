@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -36,7 +38,9 @@ from careerops_quickscore import (  # noqa: E402
 )
 from job_assessment import (  # noqa: E402
     build_job_assessment,
+    jd_fingerprint,
     persist_job_assessment,
+    profile_fingerprint,
 )
 from job_id import allocate_ids, max_prefix_from_ids  # noqa: E402
 from linkedin_enrich import (  # noqa: E402
@@ -44,6 +48,8 @@ from linkedin_enrich import (  # noqa: E402
     DEEP_SLEEP_S,
     build_deep_teaser,
     enrich_one_deep,
+    extract_linkedin_job_id,
+    fetch_linkedin_details_batch,
     is_linkedin_url,
 )
 from tools.job_urls import normalize_job_url  # noqa: E402
@@ -63,6 +69,129 @@ PASS_EXTRA = [
     "深评理由",
     "JD深度",  # teaser | deep | paste_needed
 ]
+
+SCORED_ARTIFACT_SCHEMA_VERSION = 1
+
+
+def _workspace_root(repo: Path) -> Path:
+    root = Path(repo).expanduser().resolve()
+    return root if root.name == "JobSearch_2026" else root / "JobSearch_2026"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def semantic_state_fingerprint(repo: Path) -> str:
+    """Hash semantic task files so completed verdicts invalidate old scores."""
+    root = _workspace_root(repo) / "02_Tracker" / "semantic_matches"
+    digest = hashlib.sha256()
+    if not root.exists():
+        return digest.hexdigest()
+    for path in sorted(root.glob("**/*.json")):
+        try:
+            relative = path.relative_to(root).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        except OSError:
+            continue
+    return digest.hexdigest()
+
+
+def build_scored_artifact_metadata(
+    *,
+    source_csv: Path,
+    profile: dict[str, Any],
+    gate_pass1: float,
+    min_final: float,
+    max_deep: int,
+    jd_fingerprints: dict[str, str] | None = None,
+    repo: Path | None = None,
+) -> dict[str, Any]:
+    """Build the input signature required before a scored CSV can be reused."""
+    source = Path(source_csv).expanduser().resolve()
+    return {
+        "schema_version": SCORED_ARTIFACT_SCHEMA_VERSION,
+        "source_csv": str(source),
+        "source_csv_sha256": _sha256_file(source),
+        "profile_sha256": profile_fingerprint(profile),
+        "gate_pass1": float(gate_pass1),
+        "min_final": float(min_final),
+        "max_deep": int(max_deep),
+        "jd_fingerprints": dict(jd_fingerprints or {}),
+        "semantic_state_sha256": semantic_state_fingerprint(repo or source.parent),
+    }
+
+
+def scored_artifact_path(source_csv: Path) -> Path:
+    source = Path(source_csv)
+    return source.with_name(f"{source.stem}_twopass_scored.csv")
+
+
+def _load_csv_rows(path: Path) -> list[dict[str, str]]:
+    with Path(path).open(encoding="utf-8-sig", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def load_reusable_scored_artifact(
+    source_csv: Path,
+    *,
+    repo: Path,
+    profile: dict[str, Any],
+    min_score: float,
+    max_deep: int,
+) -> tuple[list[dict[str, str]], dict[str, Any]] | None:
+    """Load the previous two-pass result only when every scoring input matches."""
+    source = Path(source_csv).expanduser().resolve()
+    scored = scored_artifact_path(source)
+    meta_path = scored.with_suffix(".json")
+    if not source.is_file() or not scored.is_file() or not meta_path.is_file():
+        return None
+    try:
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    artifact = metadata.get("artifact") if isinstance(metadata, dict) else None
+    if not isinstance(artifact, dict):
+        return None
+    if artifact.get("schema_version") != SCORED_ARTIFACT_SCHEMA_VERSION:
+        return None
+    if artifact.get("source_csv") != str(source):
+        return None
+    try:
+        if artifact.get("source_csv_sha256") != _sha256_file(source):
+            return None
+    except OSError:
+        return None
+    if artifact.get("profile_sha256") != profile_fingerprint(profile):
+        return None
+    try:
+        if float(artifact.get("gate_pass1")) != float(min_score):
+            return None
+        if float(artifact.get("min_final")) != float(min_score):
+            return None
+        if int(artifact.get("max_deep")) != int(max_deep):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if artifact.get("semantic_state_sha256") != semantic_state_fingerprint(repo):
+        return None
+
+    for url, expected in (artifact.get("jd_fingerprints") or {}).items():
+        cached_text, _ = _load_cache(str(url), repo)
+        if not cached_text or jd_fingerprint(cached_text) != str(expected):
+            return None
+    try:
+        rows = _load_csv_rows(scored)
+    except (OSError, csv.Error):
+        return None
+    return rows, metadata
 
 
 def pending_semantic_rows(rows: list[dict]) -> list[dict]:
@@ -180,14 +309,39 @@ def local_id_baseline(tracker: Path) -> dict[str, int]:
 
 
 def local_id_map(tracker: Path) -> dict[str, str]:
-    """Return canonical URL → existing job ID mappings from local trackers."""
+    """Return canonical URL → existing job ID mappings from AUTHORITATIVE
+    local sources only (apply-list snapshot + main-tab archive).
+
+    Deliberately NOT the *_twopass_scored.csv / fresh_24h_*_scored.csv files:
+    those hold provisional IDs assigned before semantic lane classification,
+    and treating them as authoritative freezes a stale letter prefix forever.
+    Only IDs that actually made it into a main table may pin a job.
+    """
     paths = []
     apply_lists = sorted(tracker.glob("hk_apply_list_*.csv"), reverse=True)
     if apply_lists:
         paths.append(apply_lists[0])
-    paths.extend(sorted(tracker.glob("*_twopass_scored.csv"), reverse=True))
-    paths.extend(sorted(tracker.glob("fresh_24h_*_scored.csv"), reverse=True))
+    main_archive = tracker / "archived_main_tabs.json"
     mapping: dict[str, str] = {}
+    if main_archive.is_file():
+        try:
+            arch = json.loads(main_archive.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            arch = None
+        if isinstance(arch, dict):
+            for tab_rows in arch.values():
+                if not isinstance(tab_rows, list):
+                    continue
+                for row in tab_rows:
+                    if not isinstance(row, list) or len(row) < 2:
+                        continue
+                    # archived rows are lists; 岗位编号 is col 0, 链接 col 10
+                    jid = str(row[0] or "").strip()
+                    url = str(row[10] if len(row) > 10 else "").strip()
+                    if not jid or not url:
+                        continue
+                    canonical = normalize_job_url(url, source="") or url
+                    mapping.setdefault(canonical, jid)
     for path in paths:
         if not path.is_file():
             continue
@@ -211,6 +365,7 @@ def score_hit(
     *,
     jd_depth: str = "teaser",
     repo: Path | None = None,
+    profile: dict[str, Any] | None = None,
     jd_full: str | None = None,
 ):
     return score_job(
@@ -222,6 +377,7 @@ def score_hit(
         track_hint=h.get("track_hint") or "F",
         soft_flags=h.get("soft_flags") or "",
         jd_depth=jd_depth,
+        profile=profile,
         repo=repo,
         jd_url=h.get("url") or "",
         jd_full=jd_full,
@@ -298,11 +454,13 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
         return h.get("teaser") or "", "teaser"
 
     if is_linkedin_url(url):
-        res = enrich_one_deep(url, repo=repo)
+        res = h.pop("_linkedin_batch_result", None)
+        if res is None:
+            res = enrich_one_deep(url, repo=repo)
         if res.ok and res.description:
             text = build_deep_teaser(res, max_chars=DEEP_DESC_CHARS)
             h["_enrich"] = {
-                "mode": "deep",
+                "mode": "deep_batch" if h.get("_linkedin_batch_used") else "deep",
                 "ok": True,
                 "job_id": res.job_id,
                 "desc_len": len(res.description),
@@ -340,7 +498,11 @@ def deep_enrich_hit(h: dict, *, repo: Path, use_browser: bool = True) -> tuple[s
                 }
                 return h.get("teaser") or "", "teaser"
 
-        fres = fetch_jd_body(url, cache_root=repo)
+        fetch_kwargs: dict[str, Any] = {"cache_root": repo}
+        browser_session = h.get("_browser_session")
+        if browser_session is not None:
+            fetch_kwargs["session"] = browser_session
+        fres = fetch_jd_body(url, **fetch_kwargs)
         if fres.ok and fres.text:
             h["_enrich"] = {
                 "mode": "browser",
@@ -384,6 +546,7 @@ def run_two_pass(
     gate_pass1: float = SCORE_GATE,
     min_final: float | None = None,
     repo: Path = REPO,
+    profile: dict[str, Any] | None = None,
     sleep_s: float = DEEP_SLEEP_S,
     max_deep: int = DEFAULT_MAX_DEEP_FETCHES,
     drop_below_final: bool = True,
@@ -419,11 +582,16 @@ def run_two_pass(
         "assessment_errors": [],
         "language_gate_failed": 0,
         "language_gate_dropped": [],
+        "jd_fingerprints": {},
+        "linkedin_batch_attempted": 0,
+        "linkedin_batch_ok": 0,
+        "linkedin_batch_worker": "not_needed",
     }
 
     # Keep one profile fingerprint for every assessment in this run.  The
     # profile itself never enters the assessment JSON; only its hash does.
-    assessment_profile = load_scoring_profile(repo)
+    scoring_profile = profile if profile is not None else load_scoring_profile(repo)
+    assessment_profile = scoring_profile
     assessment_events: list[dict[str, Any]] = []
 
     def record_assessment(
@@ -464,7 +632,7 @@ def run_two_pass(
     for h in hits:
         # Pass 1 — teaser / card only (no deep fetch)
         teaser1 = h.get("teaser") or ""
-        sc1 = score_hit(h, teaser1, repo=repo)
+        sc1 = score_hit(h, teaser1, repo=repo, profile=scoring_profile)
         h["_sc1"] = sc1
         if getattr(sc1, "language_gate", "") == "FAIL":
             record_assessment(
@@ -506,7 +674,49 @@ def run_two_pass(
         meta["pass1_kept"] += 1
         gated.append((h, sc1))
 
-    # Pass 2 — deep JD then rescore (cap deep calls)
+    # Pass 2 — deep JD then rescore (cap deep calls). LinkedIn detail is
+    # fetched through one serial Bun worker for the jobs that can actually
+    # consume the deep-fetch budget; this removes one process startup per job.
+    linkedin_batch: dict[str, Any] = {}
+    if max_deep > 0:
+        li_candidates = []
+        li_seen_ids: set[str] = set()
+        for candidate, _score in gated[:max_deep]:
+            candidate_url = str(candidate.get("url") or "")
+            if not is_linkedin_url(candidate_url):
+                continue
+            candidate_id = extract_linkedin_job_id(candidate_url)
+            if not candidate_id or candidate_id in li_seen_ids:
+                continue
+            cached, _cache_meta = _load_cache(candidate_url, repo)
+            if cached:
+                continue
+            li_seen_ids.add(candidate_id)
+            li_candidates.append(candidate_url)
+        if li_candidates:
+            meta["linkedin_batch_attempted"] = len(li_candidates)
+            batch_results = fetch_linkedin_details_batch(
+                li_candidates,
+                repo=repo,
+                timeout=60,
+                delay_s=DEEP_SLEEP_S,
+            )
+            if batch_results is None:
+                meta["linkedin_batch_worker"] = "single_fallback"
+            else:
+                linkedin_batch = batch_results
+                meta["linkedin_batch_worker"] = "detail_batch"
+                meta["linkedin_batch_ok"] = sum(
+                    1 for item in batch_results.values() if getattr(item, "ok", False)
+                )
+
+    try:
+        from portal_jd_browser import BrowserSessionPool  # type: ignore
+
+        browser_pool = BrowserSessionPool()
+    except ImportError:
+        browser_pool = None
+
     draft_rows: list[dict] = []
     deep_n = 0
     for h, sc1 in gated:
@@ -514,13 +724,41 @@ def run_two_pass(
         depth = "teaser"
         if deep_n < max_deep:
             meta["deep_attempted"] += 1
+            li_job_id = extract_linkedin_job_id(str(h.get("url") or "")) or ""
+            if li_job_id in linkedin_batch:
+                h["_linkedin_batch_result"] = linkedin_batch[li_job_id]
+                h["_linkedin_batch_used"] = True
+            if browser_pool is not None:
+                session = browser_pool.session_for(str(h.get("url") or ""))
+                if session is not None:
+                    h["_browser_session"] = session
             text2, depth = deep_enrich_hit(h, repo=repo)
+            h.pop("_browser_session", None)
+            h.pop("_linkedin_batch_used", None)
             if depth == "deep":
                 meta["deep_ok"] += 1
                 teaser2 = text2
                 h["teaser"] = text2[:3000]  # keep for 简述 context
+                deep_url = normalize_job_url(
+                    str(h.get("url") or ""), source=str(h.get("source") or "")
+                )
+                deep_text = str(h.get("_deep_jd_full") or text2 or "")
+                if deep_url and deep_text:
+                    meta["jd_fingerprints"][deep_url] = jd_fingerprint(deep_text)
             deep_n += 1
-            if sleep_s > 0 and deep_n < len(gated) and deep_n < max_deep:
+            enrich_mode = str((h.get("_enrich") or {}).get("mode") or "")
+            network_attempted = enrich_mode not in {
+                "cache",
+                "ctgoodjobs_skip_browser",
+                "teaser",
+                "deep_batch",
+            }
+            if (
+                sleep_s > 0
+                and network_attempted
+                and deep_n < len(gated)
+                and deep_n < max_deep
+            ):
                 time.sleep(sleep_s)
         else:
             depth = "teaser_capped"
@@ -531,6 +769,7 @@ def run_two_pass(
             teaser2,
             jd_depth="deep" if depth == "deep" else "teaser",
             repo=repo,
+            profile=scoring_profile,
             jd_full=h.get("_deep_jd_full") if depth == "deep" else None,
         )
         h["_sc2"] = sc2
@@ -615,6 +854,9 @@ def run_two_pass(
                 row["置信度"] = "中高" if conf == "中" else "中"
         draft_rows.append(row)
 
+    if browser_pool is not None:
+        browser_pool.close()
+
     draft_rows.sort(
         key=lambda r: -float(r.get("深评分数") or r.get("CareerOps分数") or 0)
     )
@@ -662,6 +904,10 @@ def _persist_deep_jds(rows: list[dict], repo: Path) -> None:
         if not pid:
             continue
         url = (r.get("链接") or r.get("_deep_jd_url") or "").strip()
+        # 未入表阶段岗位编号只是"字母+层级"前缀（如 D0），多行会撞名，
+        # 用 URL 短 hash 后缀保证文件唯一；完整 ID 时保持原名。
+        if re.fullmatch(r"[A-G][0-3]", pid) and url:
+            pid = f"{pid}-{hashlib.sha256(url.encode('utf-8')).hexdigest()[:8]}"
         header = f"# JD - {pid}\n\n"
         if url:
             header += f"- url: {url}\n"
@@ -717,6 +963,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: no fresh_24h CSV — run fresh_24h_scan first (temp/daily)", file=sys.stderr)
         return 2
 
+    scoring_profile = load_scoring_profile(repo)
     hits = load_hits(csv_path)
     print(f"two-pass: input={len(hits)} from {csv_path.name}")
     print(f"  gate_pass1={args.gate} (only these get deep JD)")
@@ -736,12 +983,21 @@ def main(argv: list[str] | None = None) -> int:
         gate_pass1=args.gate,
         min_final=args.min_final,
         repo=repo,
+        profile=scoring_profile,
         sleep_s=args.sleep,
         max_deep=args.max_deep,
         drop_below_final=not args.keep_below_final,
     )
-    baseline = local_id_baseline(tracker)
-    allocate_ids(rows, baseline_max=baseline, existing_ids=local_id_map(tracker))
+    # 未入表阶段不分配完整 ID（D0-025 这种会因语义改道而过期、且呈现时还需
+    # 查表核对）。这里只填"字母+层级"前缀（如 D0 / C1 / F0），后三位序号
+    # 留给 push_to_gsheet 入表时按 gsheet 全表基线统一分配。
+    for r in rows:
+        letter = (str(r.get("简历版本") or "F").strip().upper()[:1] or "F")
+        if letter == "B":
+            letter = "F"
+        tier_name = str(r.get("层级") or "")
+        digit = {"核心": 0, "一级": 1, "二级": 2, "剔除": 3}.get(tier_name, 0)
+        r["岗位编号"] = f"{letter}{digit}"
     # After ID alloc (which sets 层级 from score), flag pass-2 soft drops for review
     for r in rows:
         if r.pop("_below_final", False):
@@ -757,10 +1013,20 @@ def main(argv: list[str] | None = None) -> int:
     write_csv(out, rows, repo=repo)
 
     meta_path = out.with_suffix(".json")
-    meta["baseline_max"] = baseline
+    meta["baseline_max"] = {}
+    effective_min = args.min_final if args.min_final is not None else args.gate
+    meta["artifact"] = build_scored_artifact_metadata(
+        source_csv=csv_path,
+        profile=scoring_profile,
+        gate_pass1=args.gate,
+        min_final=effective_min,
+        max_deep=args.max_deep,
+        jd_fingerprints=meta.get("jd_fingerprints") or {},
+        repo=repo,
+    )
     atomic_write_json(meta_path, meta)
 
-    print(f"id baseline prefixes={len(baseline)} (local tracker; no gsheet)")
+    print("id baseline prefixes=0 (未入表阶段不分配完整 ID；入表时由 push 按 gsheet 基线分配)")
     print(f"pass1 kept={meta['pass1_kept']} dropped={meta['pass1_dropped']}")
     if meta.get("language_gate_failed"):
         print(f"language gate failed={meta['language_gate_failed']} (hard veto; not emitted)")

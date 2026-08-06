@@ -8,7 +8,7 @@
 // commercially or for bulk data collection. Run it on your own responsibility.
 
 import { runSearch, searchData, type SearchOpts } from "./commands/search.js"
-import { runDetail, type DetailOpts } from "./commands/detail.js"
+import { fetchDetail, runDetail, type DetailOpts } from "./commands/detail.js"
 
 interface Flags {
   _: string[]
@@ -42,6 +42,7 @@ USAGE
   bun run src/cli.ts search --location "<place>" [flags]
   bun run src/cli.ts batch --delay-ms <milliseconds> < requests.jsonl
   bun run src/cli.ts detail <id|url> [--format json|plain]
+  bun run src/cli.ts detail-batch --delay-ms <milliseconds> < requests.jsonl
 
 SEARCH FLAGS
   --location, -l <text>   Location to search. REQUIRED. e.g. "Mumbai, Maharashtra, India",
@@ -70,6 +71,13 @@ interface BatchRequest {
   remote?: unknown
   page?: unknown
   limit?: unknown
+}
+
+interface DetailBatchRequest {
+  request_id?: unknown
+  job_id?: unknown
+  id?: unknown
+  url?: unknown
 }
 
 function batchNumber(raw: unknown, fallback: number): number {
@@ -106,6 +114,29 @@ async function runBatch(delayMs: number): Promise<number> {
         limit: Math.max(1, Math.trunc(batchNumber(request.limit, 30))),
         format: "json",
       })
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: true, payload }) + "\n")
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e)
+      process.stdout.write(JSON.stringify({ request_id: requestId, ok: false, error }) + "\n")
+    }
+  }
+  return 0
+}
+
+/** Keep one Bun process alive while fetching LinkedIn detail pages serially. */
+async function runDetailBatch(delayMs: number): Promise<number> {
+  const input = await Bun.stdin.text()
+  const lines = input.split(/\r?\n/).filter((line) => line.trim())
+  for (let index = 0; index < lines.length; index++) {
+    if (index > 0) await batchSleep(delayMs)
+    let requestId = `line-${index + 1}`
+    try {
+      const request = JSON.parse(lines[index]) as DetailBatchRequest
+      if (!request || typeof request !== "object") throw new Error("request must be a JSON object")
+      if (request.request_id !== undefined) requestId = String(request.request_id)
+      const inputId = request.job_id ?? request.id ?? request.url
+      if (typeof inputId !== "string" || !inputId.trim()) throw new Error("job_id is required")
+      const payload = await fetchDetail(inputId)
       process.stdout.write(JSON.stringify({ request_id: requestId, ok: true, payload }) + "\n")
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e)
@@ -180,6 +211,13 @@ async function main(): Promise<number> {
     const parsedDelay = typeof rawDelay === "string" ? Number(rawDelay) : 0
     const delayMs = Number.isFinite(parsedDelay) ? Math.max(0, Math.trunc(parsedDelay)) : 0
     return runBatch(delayMs)
+  }
+
+  if (cmd === "detail-batch") {
+    const rawDelay = flags["delay-ms"]
+    const parsedDelay = typeof rawDelay === "string" ? Number(rawDelay) : 0
+    const delayMs = Number.isFinite(parsedDelay) ? Math.max(0, Math.trunc(parsedDelay)) : 0
+    return runDetailBatch(delayMs)
   }
 
   if (cmd === "detail") {
