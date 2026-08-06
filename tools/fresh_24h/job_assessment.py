@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.io_utils import atomic_write_json
+from tools.experience_parsing import parse_experience_requirement
 from tools.job_urls import normalize_job_url
 
 
@@ -350,11 +351,9 @@ def _classify_gap(
             out["reason"] = "JD 提及语言要求，但画像未配置语言基线（languages），需人工确认"
     elif kind == "experience":
         max_years = profile.get("max_relevant_years")
-        required_years = 0
-        m = re.search(r"(\d+)\+?\s*(?:years?|pqe)|(\d+)\s*年", str(gap.get("evidence") or ""))
-        if m:
-            required_years = int(m.group(1) or m.group(2) or 0)
-        if isinstance(max_years, (int, float)) and required_years:
+        parsed_experience = parse_experience_requirement(str(gap.get("evidence") or ""))
+        required_years = parsed_experience.minimum_years if parsed_experience else None
+        if isinstance(max_years, (int, float)) and required_years is not None:
             if required_years > max_years:
                 out["severity"] = GAP_SEVERITY_REVIEW
                 out["status"] = "years_exceed_profile"

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.profile_recovery import repair_scoring_profile
+from tools.experience_parsing import parse_experience_requirement
 from tools.language_gate import FAIL as LANGUAGE_FAIL
 from tools.language_gate import FLAG as LANGUAGE_FLAG
 from tools.language_gate import PASS as LANGUAGE_PASS
@@ -720,17 +721,12 @@ def score_job(
         text,
         re.I,
     )
-    years_match = re.search(
-        r"\b(\d+)\+?\s*(?:years?|pqe)\b|(\d+)\s*年(?:相关)?经验",
-        text,
-        re.I,
-    )
+    experience_requirement = parse_experience_requirement(text)
     neutral_scores = profile.get("neutral_scores") if isinstance(profile.get("neutral_scores"), dict) else {}
     eligibility = float(neutral_scores.get("eligibility", 3.5))
     max_years = profile.get("max_relevant_years")
-    required_years = 0
-    if years_match:
-        required_years = int(years_match.group(1) or years_match.group(2) or 0)
+    required_years = experience_requirement.minimum_years if experience_requirement else 0
+    if experience_requirement and required_years is not None:
         if isinstance(max_years, (int, float)):
             eligibility = 4.0 if required_years <= max_years else 2.0
         else:
@@ -1026,7 +1022,7 @@ def score_job(
                 "evidence": language_note,
             }
         )
-    if years_match:
+    if experience_requirement:
         label = "相关年限需逐项核对"
         gaps.append(label)
         gap_items.append(
@@ -1035,7 +1031,7 @@ def score_job(
                 "label": label,
                 "status": "unknown",
                 "severity": "review",
-                "evidence": years_match.group(0),
+                "evidence": experience_requirement.matched_text,
             }
         )
     if semantic_pending_count:
@@ -1121,7 +1117,9 @@ def score_job(
         language_requirement=language_requirement,
         domain_background="核心匹配" if core_hits else "相邻匹配" if adjacent_hits else "未匹配/待核对",
         qualification_requirement="JD提及，需核对" if qualification_match else "未说明",
-        experience_requirement=years_match.group(0) if years_match else "未说明",
+        experience_requirement=(
+            experience_requirement.normalized if experience_requirement else "未说明"
+        ),
         match_key="；".join(keys),
         gaps="；".join(gaps),
         work_time_risk="高" if risk_hits else "未发现已配置冲突",

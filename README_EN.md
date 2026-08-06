@@ -9,7 +9,25 @@ cover letters, and application review in one local-first workflow. It is not
 just an AI resume writer: it helps you decide what to apply for, why you fit,
 and how to tailor the application without giving up final control.
 
-## 🆕 Latest update · 2026-08-03
+## 🆕 Latest update · 2026-08-06
+
+This update centralizes JD experience parsing. Ranges such as `2 to 5 years`,
+`3-5 years`, and `2至5年相关经验` now use the **lower bound** for eligibility
+scoring while retaining the full range for display and review. Lower-bound
+phrases such as `5+ years` and `at least 3 years` keep their original meaning.
+The scorer and job assessment now share the same deterministic parser, so the
+score and downstream gap explanation cannot disagree. `up to / 不超过 X 年`
+remains an upper-bound expression and is not treated as a JD minimum; common
+Chinese forms such as `5年工作经验` remain supported, while date text is not
+mistaken for experience.
+
+This prevents candidates from being penalized by the upper end of a JD range.
+For example, a candidate with three years of experience facing `3–5 years` is
+checked against the minimum of three years rather than being capped as if five
+years were mandatory. Regression tests cover English and Chinese ranges, `+`
+suffixes, Chinese experience wording, and date exclusion.
+
+## 🆕 Update · 2026-08-03
 
 The scan path now uses **portal-level parallel workers with serial queries inside each portal**. LinkedIn, JobsDB, and CTgoodjobs each run one worker, so the three portals can be searched at the same time while each portal keeps its original query order and pacing.
 
