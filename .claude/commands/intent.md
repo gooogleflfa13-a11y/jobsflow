@@ -8,6 +8,8 @@
 /intent                         # 查看当前意向和配置摘要
 /intent add 产品运营、数据分析    # 生成“增加”预览，不写配置
 /intent replace 数据分析岗位       # 生成“替换”预览，不写配置
+/intent scan-depth 节能           # 预览扫描成本：节能/平衡/广覆盖
+/intent retention 宽松            # 预览最终清单：宽松/标准/精选
 /intent confirm                 # 用户确认后写入上一份预览
 /intent cancel                  # 放弃上一份预览
 ```
@@ -22,6 +24,12 @@
 - `replace`：用新方向替换原有检索范围；
 - 不明确时先复述“保留旧方向还是替换”，不要猜。
 
+工作流偏好同样必须预览后确认：
+
+- `scan-depth` 只控制 cache-miss 网络深取预算：节能约 10、平衡约 20、广覆盖约 40；
+- `retention` 只控制完整 JD 评分后的清单线：宽松 3.0、标准 3.3、精选 3.5；
+- 修改 `retention` 不得重新抓取 JD，只对已保存的深评分数重新筛选。
+
 涉及地点、薪资、工作时间、工作权或资格限制时，先在预览中单独列出这些限制，并向用户确认；不要把限制词当作岗位关键词。
 
 ### 2. 只生成预览
@@ -30,6 +38,9 @@
 python3 tools/update_intent.py add "用户确认后的新增意向"
 # 或
 python3 tools/update_intent.py replace "用户确认后的完整新意向"
+# 或工作流偏好
+python3 tools/update_intent.py scan-depth 节能
+python3 tools/update_intent.py retention 宽松
 ```
 
 向用户展示识别出的岗位/行业关键词、当前意向、拟新增查询数量和影响范围。此时不得运行 `confirm`，也不得直接编辑 `JobSearch_2026/00_Profile/queries.json`。

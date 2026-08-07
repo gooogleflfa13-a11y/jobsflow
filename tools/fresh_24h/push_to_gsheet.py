@@ -7,9 +7,10 @@ Merges into existing fresh_24h_YYYY-MM-DD tab when present:
   - Sort: 是 first, then CareerOps分数 desc
 
 Default **two-pass** scoring (recommended for 临时/最新):
-  pass-1 score on teaser → keep ≥ gate (default **3.3**)
-  → deep JD only for those (cap --max-deep) → pass-2 rescore → sheet
-  Columns 初评* / 深评* / JD深度; CareerOps* = 深评.
+  pass-1 triage on title/teaser → direct gate + uncertainty rescue
+  → all JD cache hits + bounded prioritized network deep fetch
+  → pass-2 final gate; unfetched cards remain explicit provisional rows
+  Columns 初评* / 深评* / JD深度 / 评估状态; CareerOps* = pass-2/provisional.
 
 Legacy single-pass (shallow LinkedIn enrich + one score) only with
   --legacy-single-pass (old min_score 3.0 + --enrich-max).
@@ -64,10 +65,17 @@ from two_pass_score import (  # noqa: E402
     pending_semantic_tasks,
     run_two_pass,
     scored_artifact_path,
+    select_rows_for_retention,
     write_csv as write_two_pass_csv,
 )
 from tools.job_urls import normalize_job_url  # noqa: E402
-from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
+from tools.fresh_24h.policy import (  # noqa: E402
+    SCORE_GATE,
+    load_workflow_preferences,
+    parse_retention_preference,
+    parse_scan_depth,
+    resolve_workflow_preferences,
+)
 from tools.fresh_24h.tracker_schema import merge_tracker_headers  # noqa: E402
 from tools.fresh_24h.local_tracker import (  # noqa: E402
     latest_tracker_path,
@@ -79,6 +87,19 @@ from tools.spreadsheet_safety import neutralize_spreadsheet_formula  # noqa: E40
 
 # Headers we always keep on merge read/write (base + two-pass extras).
 _KEEP_COLS = list(SHEET_HEADERS) + [c for c in PASS_EXTRA if c not in SHEET_HEADERS]
+
+
+def _mark_two_pass_review_tiers(rows: list[dict]) -> None:
+    """Keep non-final rows visible without presenting them as final-ranked jobs."""
+    for row in rows:
+        below_final = bool(row.pop("_below_final", False))
+        provisional = bool(row.pop("_provisional_needs_jd", False)) or str(
+            row.get("评估状态") or ""
+        ) == "provisional_needs_jd"
+        if provisional:
+            row["层级"] = "待审-JD不足"
+        elif below_final:
+            row["层级"] = "待审-深评偏低"
 
 
 def _reject_pending_semantic(
@@ -171,7 +192,8 @@ def _persist_scored_artifact(
     rows: list[dict],
     *,
     profile: dict,
-    min_score: float,
+    gate_pass1: float,
+    min_final: float,
     max_deep: int,
     meta: dict,
     repo: Path,
@@ -183,15 +205,20 @@ def _persist_scored_artifact(
         artifact = build_scored_artifact_metadata(
             source_csv=source_csv,
             profile=profile,
-            gate_pass1=min_score,
-            min_final=min_score,
+            gate_pass1=gate_pass1,
+            min_final=min_final,
             max_deep=max_deep,
             jd_fingerprints=meta.get("jd_fingerprints") or {},
             repo=repo,
+            contains_all_deep_scores=True,
         )
         atomic_write_json(
             scored_path.with_suffix(".json"),
-            {"artifact": artifact, "producer": "push_to_gsheet"},
+            {
+                "artifact": artifact,
+                "producer": "push_to_gsheet",
+                "run_meta": meta,
+            },
         )
         print(f"two-pass artifact: saved {scored_path.name} for later push reuse")
     except (OSError, TypeError, ValueError) as exc:
@@ -749,7 +776,8 @@ def push_local_only(
     *,
     csv_path: Path,
     hits: list[dict],
-    min_score: float,
+    gate_pass1: float,
+    min_final: float,
     max_deep: int,
     enrich_sleep: float,
     mode: str,
@@ -784,7 +812,7 @@ def push_local_only(
     if legacy_single_pass:
         rows, meta = score_new_hits(
             hits_new,
-            min_score=min_score,
+            min_score=min_final,
             baseline_max=baseline,
             existing_urls=existing_urls,
             enrich_shallow=True,
@@ -793,45 +821,51 @@ def push_local_only(
             profile=profile,
         )
     elif reusable_rows is not None:
-        rows, skipped_dup = _filter_scored_rows_against_existing(
+        scored_rows, skipped_dup = _filter_scored_rows_against_existing(
             reusable_rows, existing_urls
         )
+        rows, retention_meta = select_rows_for_retention(
+            scored_rows, final_gate=min_final
+        )
         meta = {
+            **dict((reusable_meta or {}).get("run_meta") or {}),
             "mode": "two_pass_reused",
-            "min_score": min_score,
+            "gate_pass1": gate_pass1,
+            "min_final": min_final,
             "max_deep": max_deep,
             "kept": len(rows),
             "skipped_dup_url": skipped_dup,
             "reused_artifact": True,
             "artifact": (reusable_meta or {}).get("artifact", {}),
+            **retention_meta,
         }
-        if _reject_pending_semantic(
-            rows,
-            allow=allow_pending_semantic,
-            context="local-only push",
-        ):
-            return 2
-        allocate_ids(rows, baseline_max=baseline, existing_ids=existing_id_map)
-        _persist_deep_jds(rows, REPO)
     else:
-        rows, meta = run_two_pass(
+        scored_rows, meta = run_two_pass(
             hits_new,
-            gate_pass1=min_score,
-            min_final=min_score,
+            gate_pass1=gate_pass1,
+            min_final=min_final,
             repo=REPO,
             profile=profile,
             sleep_s=enrich_sleep,
             max_deep=max_deep,
+            drop_below_final=False,
         )
         _persist_scored_artifact(
             csv_path,
-            rows,
+            scored_rows,
             profile=profile or {},
-            min_score=min_score,
+            gate_pass1=gate_pass1,
+            min_final=min_final,
             max_deep=max_deep,
             meta=meta,
             repo=REPO,
         )
+        rows, retention_meta = select_rows_for_retention(
+            scored_rows, final_gate=min_final
+        )
+        meta.update(retention_meta)
+
+    if not legacy_single_pass:
         if _reject_pending_semantic(
             rows,
             allow=allow_pending_semantic,
@@ -840,6 +874,7 @@ def push_local_only(
             return 2
         allocate_ids(rows, baseline_max=baseline, existing_ids=existing_id_map)
         _persist_deep_jds(rows, REPO)
+        _mark_two_pass_review_tiers(rows)
 
     path, added = merge_scored_rows(
         REPO,
@@ -851,6 +886,17 @@ def push_local_only(
     suffix = "scored" if legacy_single_pass else "twopass_scored"
     print(f"local-only: merged {added} new row(s) into {path}")
     print(f"local-only: source={csv_path.name} mode={meta.get('mode', 'two_pass')}")
+    if not legacy_single_pass:
+        print(
+            f"local-only: final_gate={min_final} selected={meta.get('final_selected')} "
+            f"filtered={meta.get('final_filtered')} provisional={meta.get('provisional')}"
+        )
+        print(
+            f"local-only: pass1_distribution={meta.get('pass1_score_distribution', {})}"
+        )
+        print(
+            f"local-only: deep_distribution={meta.get('deep_score_distribution', {})}"
+        )
     return 0
 
 
@@ -886,14 +932,36 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--min-score",
         type=float,
+        default=None,
+        help=(
+            "Final-list numeric override only; by default use the private "
+            "retention preference (宽松 3.0 / 标准 3.3 / 精选 3.5)"
+        ),
+    )
+    ap.add_argument(
+        "--pass1-gate",
+        type=float,
         default=SCORE_GATE,
-        help="Two-pass: pass-1 gate AND pass-2 min (default 3.3, unified). Legacy single-pass if --legacy-single-pass.",
+        help="Advanced internal routing override (default 3.3; not the final-list preference)",
+    )
+    ap.add_argument(
+        "--scan-depth",
+        default=None,
+        help="Scan cost preset: economy/节能, balanced/平衡, coverage/广覆盖",
+    )
+    ap.add_argument(
+        "--retention",
+        default=None,
+        help="Final-list preference: loose/宽松, standard/标准, selective/精选",
     )
     ap.add_argument(
         "--two-pass",
         action="store_true",
         default=True,
-        help="Two-pass: teaser score → gate → deep JD → rescore (default ON)",
+        help=(
+            "Two-pass: teaser triage → uncertainty rescue → cached/bounded "
+            "deep JD → final rescore (default ON)"
+        ),
     )
     ap.add_argument(
         "--legacy-single-pass",
@@ -925,8 +993,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--max-deep",
         type=int,
-        default=DEFAULT_MAX_DEEP_FETCHES,
-        help="Two-pass: maximum deep JD fetches after pass-1 gate",
+        default=None,
+        help=(
+            "Two-pass: maximum cache-miss network deep fetches; cache hits "
+            "do not consume this budget"
+        ),
     )
     ap.add_argument(
         "--enrich-sleep",
@@ -936,6 +1007,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     use_two_pass = bool(args.two_pass) and not bool(args.legacy_single_pass)
+    workflow = load_workflow_preferences(REPO)
+    if args.scan_depth or args.retention:
+        try:
+            workflow = resolve_workflow_preferences(
+                {
+                    "workflow_preferences": {
+                        "scan_depth": (
+                            parse_scan_depth(args.scan_depth)
+                            if args.scan_depth
+                            else workflow["scan_depth"]
+                        ),
+                        "retention_preference": (
+                            parse_retention_preference(args.retention)
+                            if args.retention
+                            else workflow["retention_preference"]
+                        ),
+                    }
+                }
+            )
+        except ValueError as exc:
+            ap.error(str(exc))
+    min_final = args.min_score if args.min_score is not None else workflow["final_gate"]
+    max_deep = (
+        args.max_deep
+        if args.max_deep is not None
+        else workflow["max_network_deep"]
+    )
+    gate_pass1 = args.pass1_gate
+    print(
+        f"workflow: scan_depth={workflow['scan_depth_label']} "
+        f"max_network_deep={max_deep}; retention={workflow['retention_label']} "
+        f"final_gate={min_final}; pass1_gate={gate_pass1} (internal)"
+    )
     if args.no_merge or args.replace:
         merge = False
     else:
@@ -956,8 +1060,9 @@ def main(argv: list[str] | None = None) -> int:
             csv_path,
             repo=REPO,
             profile=scoring_profile or {},
-            min_score=args.min_score,
-            max_deep=args.max_deep,
+            min_score=min_final,
+            max_deep=max_deep,
+            gate_pass1=gate_pass1,
         )
         if reusable is not None:
             reusable_rows, reusable_meta = reusable
@@ -989,8 +1094,9 @@ def main(argv: list[str] | None = None) -> int:
         return push_local_only(
             csv_path=csv_path,
             hits=hits,
-            min_score=args.min_score,
-            max_deep=args.max_deep,
+            gate_pass1=gate_pass1,
+            min_final=min_final,
+            max_deep=max_deep,
             enrich_sleep=args.enrich_sleep,
             mode=args.mode,
             legacy_single_pass=not use_two_pass,
@@ -1078,18 +1184,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if use_two_pass:
         if reusable_rows is not None:
-            new_rows, skipped_dup = _filter_scored_rows_against_existing(
+            scored_rows, skipped_dup = _filter_scored_rows_against_existing(
                 reusable_rows, existing_urls
             )
+            new_rows, retention_meta = select_rows_for_retention(
+                scored_rows, final_gate=min_final
+            )
             tp_meta = {
+                **dict((reusable_meta or {}).get("run_meta") or {}),
                 "mode": "two_pass_reused",
                 "reused_artifact": True,
                 "artifact": (reusable_meta or {}).get("artifact", {}),
+                **retention_meta,
             }
             score_meta = {
                 "mode": "two_pass_reused",
-                "min_score": args.min_score,
-                "max_deep": args.max_deep,
+                "gate_pass1": gate_pass1,
+                "min_final": min_final,
+                "max_deep": max_deep,
                 "kept": len(new_rows),
                 "skipped_dup_url": skipped_dup,
                 **tp_meta,
@@ -1112,31 +1224,39 @@ def main(argv: list[str] | None = None) -> int:
                 hits_new.append(h)
             print(
                 f"two-pass: input={len(hits_new)} (skip_dup={skipped_dup}) "
-                f"gate={args.min_score} max_deep={args.max_deep} → deep JD → rescore"
+                f"direct_gate={gate_pass1} max_network_deep={max_deep} "
+                "→ uncertainty rescue → deep JD → final rescore"
             )
             print("  (materials/tailor NOT run — only when you make a package)")
-            new_rows, tp_meta = run_two_pass(
+            scored_rows, tp_meta = run_two_pass(
                 hits_new,
-                gate_pass1=args.min_score,
-                min_final=args.min_score,
+                gate_pass1=gate_pass1,
+                min_final=min_final,
                 repo=REPO,
                 profile=scoring_profile,
                 sleep_s=args.enrich_sleep,
-                max_deep=args.max_deep,
+                max_deep=max_deep,
+                drop_below_final=False,
             )
             _persist_scored_artifact(
                 csv_path,
-                new_rows,
+                scored_rows,
                 profile=scoring_profile or {},
-                min_score=args.min_score,
-                max_deep=args.max_deep,
+                gate_pass1=gate_pass1,
+                min_final=min_final,
+                max_deep=max_deep,
                 meta=tp_meta,
                 repo=REPO,
             )
+            new_rows, retention_meta = select_rows_for_retention(
+                scored_rows, final_gate=min_final
+            )
+            tp_meta.update(retention_meta)
             score_meta = {
                 "mode": "two_pass",
-                "min_score": args.min_score,
-                "max_deep": args.max_deep,
+                "gate_pass1": gate_pass1,
+                "min_final": min_final,
+                "max_deep": max_deep,
                 "kept": len(new_rows),
                 "skipped_dup_url": skipped_dup,
                 **tp_meta,
@@ -1147,22 +1267,23 @@ def main(argv: list[str] | None = None) -> int:
             context="Google Sheets push",
         ):
             return 2
-        # No extra filter on pass-2 results: show whatever run_two_pass returns
-        # (including soft-kept below-min_final rows flagged with _below_final).
+        # Keep explicit provisional rows visible, but mark them as JD-insufficient
+        # rather than presenting the title-only score as a final result.
         allocate_ids(new_rows, baseline_max=baseline, existing_ids=existing_id_map)
-        for r in new_rows:
-            if r.pop("_below_final", False):
-                r["层级"] = "待审-深评偏低"
+        _mark_two_pass_review_tiers(new_rows)
         _persist_deep_jds(new_rows, REPO)
         if reusable_rows is None:
             print(
-                f"two-pass done: pass1_kept={tp_meta.get('pass1_kept')} "
-                f"final_kept={tp_meta.get('final_kept')} deep_ok={tp_meta.get('deep_ok')}"
+                f"two-pass done: pass1_direct={tp_meta.get('pass1_kept')} "
+                f"rescued={tp_meta.get('pass1_rescued')} "
+                f"final_kept={tp_meta.get('final_kept')} "
+                f"provisional={tp_meta.get('provisional_needs_jd')} "
+                f"deep_ok={tp_meta.get('deep_ok')}"
             )
     else:
         new_rows, score_meta = score_new_hits(
             hits,
-            min_score=args.min_score if args.min_score != SCORE_GATE else 3.0,
+            min_score=min_final if args.min_score is not None else 3.0,
             baseline_max=baseline,
             existing_urls=existing_urls,
             enrich_shallow=enrich_shallow,
@@ -1283,9 +1404,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"OK total rows: {len(combined)} (本轮新增={n_new}, 较早={n_old})")
     print(f"OK batch: {batch_id} 入表时间={entered}")
     print(
-        f"OK mode={score_meta.get('mode')} min_score={score_meta.get('min_score')} "
+        f"OK mode={score_meta.get('mode')} final_gate={score_meta.get('min_final', min_final)} "
         f"new_kept={score_meta.get('kept')} "
+        f"pass1_rescued={score_meta.get('pass1_rescued', 0)} "
         f"pass1_dropped={score_meta.get('pass1_dropped', score_meta.get('dropped_below_min'))} "
+        f"provisional={score_meta.get('provisional_needs_jd', 0)} "
         f"dup_skip={score_meta.get('skipped_dup_url')}"
         + (
             f" max_deep={score_meta.get('max_deep')}"
@@ -1293,6 +1416,18 @@ def main(argv: list[str] | None = None) -> int:
             else ""
         )
     )
+    if score_meta.get("mode") in {"two_pass", "two_pass_reused"}:
+        print(
+            f"OK pass1_distribution={score_meta.get('pass1_score_distribution', {})}"
+        )
+        print(
+            f"OK deep_distribution={score_meta.get('deep_score_distribution', {})}"
+        )
+        print(
+            f"OK retention_selected={score_meta.get('final_selected')} "
+            f"retention_filtered={score_meta.get('final_filtered')} "
+            f"provisional={score_meta.get('provisional', score_meta.get('provisional_needs_jd'))}"
+        )
     print(f"OK source: {csv_path}")
     print(f"OK url: {url}")
     return 0

@@ -23,7 +23,7 @@ JobSearch_2026/02_Tracker/hk_apply_list_YYYY-MM-DD.csv
 
 | Phase | Does | Does NOT |
 |-------|------|----------|
-| **Search + two-pass** | Scan -> pass-1 -> gate -> deep -> pass-2 -> sheet | Auto-tailor CV / auto-generate packages |
+| **Search + two-pass** | Scan -> pass-1 scheduling/rescue -> cached/bounded deep -> final gate -> sheet/review | Auto-tailor CV / auto-generate packages |
 | **Materials** | Only after user picks a package -> `job_materials` | Decoupled from scan |
 
 Implementation: `tools/fresh_24h/two_pass_score.py`, `temp_two_pass.sh`, `push_to_gsheet.py`; materials: `tools/job_materials/`.
@@ -39,15 +39,21 @@ an explicit migration.
 
 ```text
 1 Scan temp/daily -> title + teaser candidate CSV
-2 Pass-1          -> CareerOps score on teaser
-3 Gate            -> Only score >= 3.3 passes (below dropped, no full JD)
-4 Deep JD         -> LinkedIn-primary full; CT URL normalize; JobsDB often teaser
-5 Pass-2          -> Rescore on pass-2 text (may still be teaser)
-6 Sheet           -> Main CareerOps* = pass-2; also pass-1* / pass-2* / JD depth
-7 Materials       -> Only when user picks a job - never auto
+2 Pass-1          -> CareerOps scheduling score on card text
+3 Route/rescue    -> >=3.3 direct; cache hit, thin teaser or gray band also continues
+4 Deep JD         -> cache first (zero network budget); bounded network fetches next
+5 Pass-2          -> Full-JD rescore; persist every deep score for later re-filtering
+6 Retention       -> Loose 3.0 / standard 3.3 / selective 3.5, chosen by user
+7 Sheet/review    -> Selected rows rank normally; unfetched rows = 待审-JD不足
+8 Materials       -> Only when user picks a job - never auto
 ```
 
-**Gate default 3.3**. Legacy single-pass: `--legacy-single-pass` (shallow enrich + custom min, old default 3.0).
+**Pass 1 and final retention are independent.** Pass 1 uses 3.3 only as an
+internal direct-routing line, plus a derived rescue floor and information-quality
+rescue. Network cost comes from scan depth: economy ~10, balanced ~20, coverage
+~40 cache-miss fetches. The final list uses loose 3.0, standard 3.3 or selective
+3.5. Changing that final preference reuses saved deep scores.
+Legacy single-pass: `--legacy-single-pass` (shallow enrich + custom min, old default 3.0).
 
 > **Honesty:** JobsDB/CT pass-2 is often **teaser + URL fix**, not full JD. Use `job_materials jd set` to paste full text for materials.
 
@@ -59,7 +65,7 @@ an explicit migration.
 |------|---------|--------|
 | Daily | `./tools/fresh_24h/fresh_24h_scan.sh daily` | Last ~24h |
 | **Temp** | `./tools/fresh_24h/fresh_24h_scan.sh temp` | **Since last refresh** |
-| **Recommended** (scan + two-pass) | `./tools/fresh_24h/temp_two_pass.sh temp` | Same + gate 3.3 |
+| **Recommended** (scan + two-pass) | `./tools/fresh_24h/temp_two_pass.sh temp` | Same + confirmed scan depth + retention preference |
 
 State file: `fresh_refresh_state.json`
 
@@ -67,8 +73,8 @@ State file: `fresh_refresh_state.json`
 ./tools/fresh_24h/fresh_24h_scan.sh --show-state
 ./tools/fresh_24h/temp_two_pass.sh temp          # temp + two-pass (default)
 
-# Push to Google Sheet (default two-pass, gate 3.3)
-python3 tools/fresh_24h/push_to_gsheet.py --also-local --min-score 3.3 --mode temp
+# Push to Google Sheet (uses private balanced/standard defaults for legacy configs)
+python3 tools/fresh_24h/push_to_gsheet.py --also-local --mode temp
 ```
 
 See `tools/fresh_24h/README.md` and `tools/fresh_24h/AGENT_REFRESH.md`.

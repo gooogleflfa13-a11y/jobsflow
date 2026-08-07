@@ -43,7 +43,7 @@ ai-job-search/
 │   ├── fresh_24h/               ← /scan + /push 管线
 │   │   ├── temp_two_pass.sh     ← 入口：/scan 胶水脚本（temp/daily/N-hours）
 │   │   ├── fresh_24h_scan.py    ← 审：多门户搜索编排（972行）、去重、过滤
-│   │   ├── two_pass_score.py    ← 审：两段评分（544行）、gate 3.3、deep JD fetch
+│   │   ├── two_pass_score.py    ← 审：两段评分、扫描深度、保留偏好、deep JD fetch
 │   │   ├── push_to_gsheet.py    ← 审：Google Sheets/本地 CSV 推送（901行）、合并/格式
 │   │   ├── queries.json         ← 审：行业中立、setup-required 的空模板
 │   │   ├── refresh_state.py     ← 审：刷新时间状态（原子写入、备份恢复）
@@ -245,12 +245,12 @@ ai-job-search/
       ├── load_tracker_keys() → 去重（vs 已有 tracker CSV）
       └── 写入 <timestamp>_fresh.csv + <timestamp>_run.json
    b. python3 two_pass_score.py ...                   # 两段评分
-      ├── Pass 1: 对 teaser 评分 → gate >= 3.3
-      ├── deep_enrich_hit() → 三级 fallback:
+      ├── Pass 1: 对 teaser 做调度评分；3.3 直接通过，缓存/薄摘要/灰区救援
+      ├── deep_enrich_hit() → 缓存不限额、网络限额的三级 fallback:
       │   ├── jd_cache.py (URL-keyed, TTL 60天)
       │   ├── LinkedIn CLI detail / JobsDB Playwright
       │   └── teaser fallback
-      ├── Pass 2: 对完整 JD 重新评分
+      ├── Pass 2: 对完整 JD 重新评分并持久化 → 用户选择 3.0/3.3/3.5 保留线；未深取项明确待审
       └── 写入 <timestamp>_twopass_scored.csv
 5. Agent 读取 CSV, 向用户报告 top 5, 询问是否 push
 6. 用户确认 → .claude/commands/push.md →

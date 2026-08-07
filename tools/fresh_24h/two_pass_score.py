@@ -3,11 +3,15 @@
 
 User product rule (JobSearch line):
   1) Scan latest jobs (temp/daily) — title + teaser only
-  2) **Pass-1 score** — keep only score >= gate (default **3.3**)
-  3) **Deep JD** only for gated jobs (LinkedIn CLI; JobsDB Playwright; **skip CT browser**)
-  4) **Pass-2 score** on full(er) JD text
-  5) Write scored CSV / rows for sheet — both scores visible
-  6) Materials tailor is **NOT** here — only when user later makes a package
+  2) **Pass-1 triage** — direct gate 3.3 plus a lower uncertainty rescue floor
+  3) **Deep JD** — all cache hits, then a bounded prioritized network budget
+     (LinkedIn CLI; JobsDB Playwright; **skip CT browser**)
+  4) **Pass-2 score** on full(er) JD text; persist raw deep scores
+  5) **Retention view** — loose 3.0 / standard 3.3 / selective 3.5, user chosen
+  6) Keep unfetched/thin cards visible as ``provisional_needs_jd`` instead of
+     silently treating a title-only score as final
+  7) Write scored CSV / rows for sheet — both scores and assessment status visible
+  8) Materials tailor is **NOT** here — only when user later makes a package
 
 This is NOT an auto-trigger on every /scan without the configured threshold.
 """
@@ -53,7 +57,16 @@ from linkedin_enrich import (  # noqa: E402
     is_linkedin_url,
 )
 from tools.job_urls import normalize_job_url  # noqa: E402
-from tools.fresh_24h.policy import DEFAULT_MAX_DEEP_FETCHES, SCORE_GATE  # noqa: E402
+from tools.fresh_24h.policy import (  # noqa: E402
+    DEFAULT_MAX_DEEP_FETCHES,
+    MIN_INFORMATIVE_TEASER_CHARS,
+    SCORE_GATE,
+    default_retrieval_floor,
+    load_workflow_preferences,
+    parse_retention_preference,
+    parse_scan_depth,
+    resolve_workflow_preferences,
+)
 from tools.fresh_24h.tracker_schema import merge_tracker_headers  # noqa: E402
 from tools.io_utils import atomic_write_json, atomic_write_stream, atomic_write_text  # noqa: E402
 
@@ -68,9 +81,10 @@ PASS_EXTRA = [
     "深评等级",
     "深评理由",
     "JD深度",  # teaser | deep | paste_needed
+    "评估状态",  # ready | pending | below_current_retention | provisional_needs_jd
 ]
 
-SCORED_ARTIFACT_SCHEMA_VERSION = 1
+SCORED_ARTIFACT_SCHEMA_VERSION = 3
 
 
 def _workspace_root(repo: Path) -> Path:
@@ -113,6 +127,7 @@ def build_scored_artifact_metadata(
     max_deep: int,
     jd_fingerprints: dict[str, str] | None = None,
     repo: Path | None = None,
+    contains_all_deep_scores: bool = True,
 ) -> dict[str, Any]:
     """Build the input signature required before a scored CSV can be reused."""
     source = Path(source_csv).expanduser().resolve()
@@ -122,7 +137,11 @@ def build_scored_artifact_metadata(
         "source_csv_sha256": _sha256_file(source),
         "profile_sha256": profile_fingerprint(profile),
         "gate_pass1": float(gate_pass1),
+        "retrieval_floor": default_retrieval_floor(gate_pass1),
         "min_final": float(min_final),
+        "retention_independent": True,
+        "contains_all_deep_scores": bool(contains_all_deep_scores),
+        "min_informative_teaser_chars": MIN_INFORMATIVE_TEASER_CHARS,
         "max_deep": int(max_deep),
         "jd_fingerprints": dict(jd_fingerprints or {}),
         "semantic_state_sha256": semantic_state_fingerprint(repo or source.parent),
@@ -146,6 +165,7 @@ def load_reusable_scored_artifact(
     profile: dict[str, Any],
     min_score: float,
     max_deep: int,
+    gate_pass1: float = SCORE_GATE,
 ) -> tuple[list[dict[str, str]], dict[str, Any]] | None:
     """Load the previous two-pass result only when every scoring input matches."""
     source = Path(source_csv).expanduser().resolve()
@@ -172,9 +192,20 @@ def load_reusable_scored_artifact(
     if artifact.get("profile_sha256") != profile_fingerprint(profile):
         return None
     try:
-        if float(artifact.get("gate_pass1")) != float(min_score):
+        artifact_gate = float(artifact.get("gate_pass1"))
+        if artifact_gate != float(gate_pass1):
             return None
-        if float(artifact.get("min_final")) != float(min_score):
+        if float(artifact.get("retrieval_floor")) != default_retrieval_floor(
+            artifact_gate
+        ):
+            return None
+        if artifact.get("retention_independent") is not True:
+            return None
+        if artifact.get("contains_all_deep_scores") is not True:
+            return None
+        if int(artifact.get("min_informative_teaser_chars")) != int(
+            MIN_INFORMATIVE_TEASER_CHARS
+        ):
             return None
         if int(artifact.get("max_deep")) != int(max_deep):
             return None
@@ -210,6 +241,66 @@ def pending_semantic_rows(rows: list[dict]) -> list[dict]:
         if count > 0 or str(row.get("语义匹配来源") or "").strip() == "pending_fallback":
             pending.append(row)
     return pending
+
+
+def select_rows_for_retention(
+    rows: list[dict], *, final_gate: float
+) -> tuple[list[dict], dict[str, int]]:
+    """Apply a user shortlist preference to already-scored rows.
+
+    This operation is deliberately network-free: scan depth determines which
+    jobs obtained a deep JD, while this function only changes the final view.
+    Provisional rows remain visible in their own review tier.
+    """
+    selected: list[dict] = []
+    meta = {"final_selected": 0, "final_filtered": 0, "provisional": 0}
+    for raw in rows:
+        row = dict(raw)
+        depth = str(row.get("JD深度") or "")
+        provisional = (
+            str(row.get("评估状态") or "") == "provisional_needs_jd"
+            or depth != "deep"
+        )
+        if provisional:
+            row["评估状态"] = "provisional_needs_jd"
+            row["_provisional_needs_jd"] = True
+            selected.append(row)
+            meta["provisional"] += 1
+            continue
+        try:
+            score = float(row.get("深评分数") or row.get("CareerOps分数") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score < float(final_gate):
+            meta["final_filtered"] += 1
+            continue
+        row["评估状态"] = (
+            "pending" if pending_semantic_rows([row]) else "ready"
+        )
+        selected.append(row)
+        meta["final_selected"] += 1
+    return selected, meta
+
+
+def _empty_score_distribution() -> dict[str, int]:
+    return {
+        "below_3.0": 0,
+        "3.0_to_3.3": 0,
+        "3.3_to_3.5": 0,
+        "3.5_plus": 0,
+    }
+
+
+def _record_score_distribution(distribution: dict[str, int], score: float) -> None:
+    value = float(score)
+    if value < 3.0:
+        distribution["below_3.0"] += 1
+    elif value < 3.3:
+        distribution["3.0_to_3.3"] += 1
+    elif value < 3.5:
+        distribution["3.3_to_3.5"] += 1
+    else:
+        distribution["3.5_plus"] += 1
 
 
 def pending_semantic_tasks(rows: list[dict]) -> list[str]:
@@ -554,26 +645,39 @@ def run_two_pass(
     """
     Returns (sheet_rows with two-pass fields, meta).
     Sheet CareerOps* columns = **pass-2 (deep)** scores.
-    Extra keys on row: 初评*, 深评*, JD深度.
-    By default, pass-2 below min_final are hard-dropped in accordance with
-    docs/system_rules.md.
+    Extra keys on row: 初评*, 深评*, JD深度, 评估状态.
+    Deep pass-2 scores below min_final are hard-dropped by default.  Rows that
+    never obtained a deep JD are retained as explicit provisional review items;
+    they do not increment ``final_kept``.
     """
     if min_final is None:
         min_final = gate_pass1
+    retrieval_floor = default_retrieval_floor(gate_pass1)
 
     # URL normalize before scoring/dedup (not only inside deep enrich)
     normalize_hits_urls(hits)
 
     meta: dict[str, Any] = {
         "gate_pass1": gate_pass1,
+        "retrieval_floor": retrieval_floor,
         "min_final": min_final,
         "drop_below_final": drop_below_final,
         "input": len(hits),
         "pass1_kept": 0,
+        "pass1_rescued": 0,
         "pass1_dropped": 0,
+        "pass1_rescue_samples": [],
+        "pass1_score_distribution": _empty_score_distribution(),
         "deep_attempted": 0,
+        "deep_cache_hits": 0,
+        "deep_network_selected": 0,
+        "deep_network_attempted": 0,
+        "deep_budget_exhausted": 0,
+        "deep_unavailable": 0,
         "deep_ok": 0,
         "final_kept": 0,
+        "provisional_needs_jd": 0,
+        "deep_score_distribution": _empty_score_distribution(),
         "dropped_final": [],
         "pass1_drop_samples": [],
         "semantic_pending_rows": 0,
@@ -633,6 +737,7 @@ def run_two_pass(
         # Pass 1 — teaser / card only (no deep fetch)
         teaser1 = h.get("teaser") or ""
         sc1 = score_hit(h, teaser1, repo=repo, profile=scoring_profile)
+        _record_score_distribution(meta["pass1_score_distribution"], sc1.score)
         h["_sc1"] = sc1
         if getattr(sc1, "language_gate", "") == "FAIL":
             record_assessment(
@@ -652,7 +757,20 @@ def run_two_pass(
                     }
                 )
             continue
+        cached_text, _cached_meta = _load_cache(str(h.get("url") or ""), repo)
+        if cached_text:
+            h["_pass1_cache_hit"] = True
+        teaser_chars = len(re.sub(r"\s+", "", teaser1))
+        thin_teaser = teaser_chars < MIN_INFORMATIVE_TEASER_CHARS
+        rescue_reason = ""
         if sc1.score < gate_pass1:
+            if cached_text:
+                rescue_reason = "jd_cache"
+            elif thin_teaser:
+                rescue_reason = "thin_teaser"
+            elif sc1.score >= retrieval_floor:
+                rescue_reason = "gray_band"
+        if sc1.score < gate_pass1 and not rescue_reason:
             record_assessment(
                 h,
                 score=sc1,
@@ -671,25 +789,66 @@ def run_two_pass(
                     }
                 )
             continue
-        meta["pass1_kept"] += 1
+        if sc1.score < gate_pass1:
+            meta["pass1_rescued"] += 1
+            h["_pass1_rescue_reason"] = rescue_reason
+            if len(meta["pass1_rescue_samples"]) < 15:
+                meta["pass1_rescue_samples"].append(
+                    {
+                        "title": h.get("title"),
+                        "company": h.get("company"),
+                        "score": sc1.score,
+                        "teaser_chars": teaser_chars,
+                        "reason": rescue_reason,
+                    }
+                )
+        else:
+            meta["pass1_kept"] += 1
         gated.append((h, sc1))
 
-    # Pass 2 — deep JD then rescore (cap deep calls). LinkedIn detail is
+    # Cache hits are zero-cost and never consume the network budget.  Among
+    # cache misses, prioritize candidates by pass-1 score plus an uncertainty
+    # bonus for missing/short teaser text.  CT without cache is deliberately
+    # excluded because the product policy does not burn a browser on its WAF.
+    def network_priority(item: tuple[dict, Any]) -> float:
+        candidate, score = item
+        teaser_chars = len(re.sub(r"\s+", "", str(candidate.get("teaser") or "")))
+        if teaser_chars == 0:
+            uncertainty_bonus = 0.50
+        elif teaser_chars < MIN_INFORMATIVE_TEASER_CHARS:
+            uncertainty_bonus = 0.35
+        else:
+            uncertainty_bonus = 0.0
+        direct_gate_bonus = 0.15 if score.score >= gate_pass1 else 0.0
+        return float(score.score) + uncertainty_bonus + direct_gate_bonus
+
+    network_candidates = [
+        item
+        for item in gated
+        if not item[0].get("_pass1_cache_hit")
+        and "ctgoodjobs.hk" not in str(item[0].get("url") or "").casefold()
+    ]
+    network_candidates.sort(key=network_priority, reverse=True)
+    selected_network = network_candidates[: max(0, int(max_deep))]
+    selected_network_ids = {id(candidate) for candidate, _score in selected_network}
+    meta["deep_network_selected"] = len(selected_network)
+    meta["deep_budget_exhausted"] = max(
+        0, len(network_candidates) - len(selected_network)
+    )
+
+    # Pass 2 — deep JD then rescore (cap network jobs, not cache reads). LinkedIn detail is
     # fetched through one serial Bun worker for the jobs that can actually
     # consume the deep-fetch budget; this removes one process startup per job.
     linkedin_batch: dict[str, Any] = {}
-    if max_deep > 0:
+    if selected_network:
         li_candidates = []
         li_seen_ids: set[str] = set()
-        for candidate, _score in gated[:max_deep]:
+        for candidate, _score in selected_network:
             candidate_url = str(candidate.get("url") or "")
             if not is_linkedin_url(candidate_url):
                 continue
             candidate_id = extract_linkedin_job_id(candidate_url)
             if not candidate_id or candidate_id in li_seen_ids:
-                continue
-            cached, _cache_meta = _load_cache(candidate_url, repo)
-            if cached:
                 continue
             li_seen_ids.add(candidate_id)
             li_candidates.append(candidate_url)
@@ -718,12 +877,22 @@ def run_two_pass(
         browser_pool = None
 
     draft_rows: list[dict] = []
-    deep_n = 0
+    network_processed = 0
     for h, sc1 in gated:
         teaser2 = h.get("teaser") or ""
         depth = "teaser"
-        if deep_n < max_deep:
+        cache_available = bool(h.pop("_pass1_cache_hit", False))
+        network_selected = id(h) in selected_network_ids
+        portal_host = str(h.get("url") or "").casefold()
+        ct_without_cache = "ctgoodjobs.hk" in portal_host and not cache_available
+        if ct_without_cache:
+            depth = "teaser_unavailable"
+            meta["deep_unavailable"] += 1
+        elif cache_available or network_selected:
             meta["deep_attempted"] += 1
+            if network_selected:
+                meta["deep_network_attempted"] += 1
+                network_processed += 1
             li_job_id = extract_linkedin_job_id(str(h.get("url") or "")) or ""
             if li_job_id in linkedin_batch:
                 h["_linkedin_batch_result"] = linkedin_batch[li_job_id]
@@ -745,8 +914,9 @@ def run_two_pass(
                 deep_text = str(h.get("_deep_jd_full") or text2 or "")
                 if deep_url and deep_text:
                     meta["jd_fingerprints"][deep_url] = jd_fingerprint(deep_text)
-            deep_n += 1
             enrich_mode = str((h.get("_enrich") or {}).get("mode") or "")
+            if enrich_mode == "cache":
+                meta["deep_cache_hits"] += 1
             network_attempted = enrich_mode not in {
                 "cache",
                 "ctgoodjobs_skip_browser",
@@ -756,8 +926,7 @@ def run_two_pass(
             if (
                 sleep_s > 0
                 and network_attempted
-                and deep_n < len(gated)
-                and deep_n < max_deep
+                and network_processed < len(selected_network)
             ):
                 time.sleep(sleep_s)
         else:
@@ -774,6 +943,8 @@ def run_two_pass(
         )
         h["_sc2"] = sc2
         h["_jd_depth"] = depth
+        if depth == "deep":
+            _record_score_distribution(meta["deep_score_distribution"], sc2.score)
 
         # A hard language mismatch is a veto independent of the numeric score
         # or a caller's custom min_final threshold. Never emit it to the
@@ -799,14 +970,19 @@ def run_two_pass(
             continue
 
         below_final = sc2.score < min_final
-        if below_final:
-            assessment_status = "final_filtered"
-        elif sc2.semantic_pending_count:
+        provisional = depth != "deep"
+        if provisional:
+            assessment_status = "provisional_needs_jd"
+        elif getattr(sc2, "semantic_pending_count", 0):
             assessment_status = "pending"
-        elif depth != "deep":
-            assessment_status = "provisional"
         else:
             assessment_status = "ready"
+        if provisional:
+            row_status = "provisional_needs_jd"
+        elif below_final:
+            row_status = "below_current_retention"
+        else:
+            row_status = assessment_status
         record_assessment(
             h,
             score=sc2,
@@ -815,7 +991,7 @@ def run_two_pass(
             depth=depth,
             status=assessment_status,
         )
-        if below_final:
+        if below_final and not provisional:
             meta["dropped_final"].append(
                 {
                     "title": h.get("title"),
@@ -844,7 +1020,11 @@ def run_two_pass(
         row["深评等级"] = sc2.grade
         row["深评理由"] = (sc2.reason or "")[:200]
         row["JD深度"] = depth
-        if below_final:
+        row["评估状态"] = row_status
+        if provisional:
+            row["_provisional_needs_jd"] = True
+            meta["provisional_needs_jd"] += 1
+        elif below_final:
             row["_below_final"] = True
         else:
             meta["final_kept"] += 1
@@ -920,32 +1100,56 @@ def _persist_deep_jds(rows: list[dict], repo: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="Two-pass score: gate 3.3 on teaser → deep JD → rescore → CSV"
+        description=(
+            "Two-pass score: uncertainty-aware pass-1 triage → cached/bounded "
+            "deep JD → final gate → CSV"
+        )
     )
     ap.add_argument("--csv", type=Path, default=None, help="fresh_24h candidates CSV")
     ap.add_argument("--repo", type=Path, default=REPO)
     ap.add_argument(
         "--gate",
         type=float,
-        default=SCORE_GATE,
-        help="Pass-1 minimum to fetch full JD (default 3.3; same as entry min)",
+        default=None,
+        help=(
+            "Advanced override for the internal direct pass-1 routing line "
+            "(default 3.3); this is not the user's final retention preference"
+        ),
+    )
+    ap.add_argument(
+        "--scan-depth",
+        default=None,
+        help="Scan cost preset: economy/节能, balanced/平衡, coverage/广覆盖",
+    )
+    ap.add_argument(
+        "--retention",
+        default=None,
+        help="Final-list preference: loose/宽松, standard/标准, selective/精选",
     )
     ap.add_argument(
         "--min-final",
         type=float,
         default=None,
-        help="Pass-2 soft floor for final_kept / 待审 flag (default = same as --gate)",
+        help="Numeric final-list override; default comes from the private retention preference",
     )
     ap.add_argument(
         "--keep-below-final",
         action="store_true",
-        help="Diagnostic only: keep pass-2 scores below min_final and flag them",
+        help="Compatibility flag; scored previews already retain deep scores for instant re-filtering",
+    )
+    ap.add_argument(
+        "--hide-below-final",
+        action="store_true",
+        help="Hide deep scores below the current final line from the scored preview",
     )
     ap.add_argument(
         "--max-deep",
         type=int,
-        default=DEFAULT_MAX_DEEP_FETCHES,
-        help="Maximum post-gate deep JD fetches",
+        default=None,
+        help=(
+            "Maximum cache-miss network deep fetches; valid JD cache hits "
+            "do not consume this budget"
+        ),
     )
     ap.add_argument("--sleep", type=float, default=DEEP_SLEEP_S)
     ap.add_argument(
@@ -965,12 +1169,53 @@ def main(argv: list[str] | None = None) -> int:
 
     scoring_profile = load_scoring_profile(repo)
     hits = load_hits(csv_path)
+    preferences = load_workflow_preferences(repo)
+    if args.scan_depth or args.retention:
+        try:
+            preferences = resolve_workflow_preferences(
+                {
+                    "workflow_preferences": {
+                        "scan_depth": (
+                            parse_scan_depth(args.scan_depth)
+                            if args.scan_depth
+                            else preferences["scan_depth"]
+                        ),
+                        "retention_preference": (
+                            parse_retention_preference(args.retention)
+                            if args.retention
+                            else preferences["retention_preference"]
+                        ),
+                    }
+                }
+            )
+        except ValueError as exc:
+            ap.error(str(exc))
+    gate_pass1 = args.gate if args.gate is not None else SCORE_GATE
+    effective_min = (
+        args.min_final if args.min_final is not None else preferences["final_gate"]
+    )
+    max_deep = (
+        args.max_deep
+        if args.max_deep is not None
+        else preferences["max_network_deep"]
+    )
     print(f"two-pass: input={len(hits)} from {csv_path.name}")
-    print(f"  gate_pass1={args.gate} (only these get deep JD)")
-    print(f"  min_final={args.min_final if args.min_final is not None else args.gate}")
     print(
-        f"  drop_below_final={not args.keep_below_final} "
-        f"(default True per system rules)"
+        f"  scan_depth={preferences['scan_depth_label']} "
+        f"max_network_deep={max_deep}"
+    )
+    print(
+        f"  retention={preferences['retention_label']} "
+        f"min_final={effective_min}"
+    )
+    print(f"  gate_pass1={gate_pass1} (internal direct routing)")
+    print(
+        f"  retrieval_floor={default_retrieval_floor(gate_pass1)} "
+        f"or teaser<{MIN_INFORMATIVE_TEASER_CHARS} chars (uncertainty rescue)"
+    )
+    print(
+        f"  scored_preview_keeps_below_final={not args.hide_below_final} "
+        "(allows instant retention changes without another fetch)"
     )
     print(
         "  deep JD: LinkedIn CLI + JobsDB Playwright; "
@@ -980,13 +1225,13 @@ def main(argv: list[str] | None = None) -> int:
 
     rows, meta = run_two_pass(
         hits,
-        gate_pass1=args.gate,
-        min_final=args.min_final,
+        gate_pass1=gate_pass1,
+        min_final=effective_min,
         repo=repo,
         profile=scoring_profile,
         sleep_s=args.sleep,
-        max_deep=args.max_deep,
-        drop_below_final=not args.keep_below_final,
+        max_deep=max_deep,
+        drop_below_final=args.hide_below_final,
     )
     # 未入表阶段不分配完整 ID（D0-025 这种会因语义改道而过期、且呈现时还需
     # 查表核对）。这里只填"字母+层级"前缀（如 D0 / C1 / F0），后三位序号
@@ -1002,6 +1247,11 @@ def main(argv: list[str] | None = None) -> int:
     for r in rows:
         if r.pop("_below_final", False):
             r["层级"] = "待审-深评偏低"
+        if (
+            r.pop("_provisional_needs_jd", False)
+            or r.get("评估状态") == "provisional_needs_jd"
+        ):
+            r["层级"] = "待审-JD不足"
     _persist_deep_jds(rows, repo)
 
     out = args.out
@@ -1014,28 +1264,37 @@ def main(argv: list[str] | None = None) -> int:
 
     meta_path = out.with_suffix(".json")
     meta["baseline_max"] = {}
-    effective_min = args.min_final if args.min_final is not None else args.gate
     meta["artifact"] = build_scored_artifact_metadata(
         source_csv=csv_path,
         profile=scoring_profile,
-        gate_pass1=args.gate,
+        gate_pass1=gate_pass1,
         min_final=effective_min,
-        max_deep=args.max_deep,
+        max_deep=max_deep,
         jd_fingerprints=meta.get("jd_fingerprints") or {},
         repo=repo,
+        contains_all_deep_scores=not args.hide_below_final,
     )
     atomic_write_json(meta_path, meta)
 
     print("id baseline prefixes=0 (未入表阶段不分配完整 ID；入表时由 push 按 gsheet 基线分配)")
-    print(f"pass1 kept={meta['pass1_kept']} dropped={meta['pass1_dropped']}")
+    print(
+        f"pass1 direct={meta['pass1_kept']} rescued={meta['pass1_rescued']} "
+        f"dropped={meta['pass1_dropped']}"
+    )
     if meta.get("language_gate_failed"):
         print(f"language gate failed={meta['language_gate_failed']} (hard veto; not emitted)")
-    print(f"deep attempted={meta['deep_attempted']} ok={meta['deep_ok']}")
+    print(
+        f"deep cache={meta['deep_cache_hits']} "
+        f"network={meta['deep_network_attempted']}/{meta['deep_network_selected']} "
+        f"budget_exhausted={meta['deep_budget_exhausted']} ok={meta['deep_ok']}"
+    )
     n_below = len(meta["dropped_final"])
     print(
-        f"final kept={meta['final_kept']} "
-        f"pass2_below_min={n_below} (in_csv={args.keep_below_final}) → {out}"
+        f"final kept={meta['final_kept']} provisional={meta['provisional_needs_jd']} "
+        f"pass2_below_min={n_below} (in_csv={not args.hide_below_final}) → {out}"
     )
+    print(f"pass1 score distribution={meta['pass1_score_distribution']}")
+    print(f"deep score distribution={meta['deep_score_distribution']}")
     if meta.get("assessment_records"):
         print(
             f"assessments={meta['assessment_records']} "

@@ -20,6 +20,8 @@ REPO = Path(__file__).resolve().parents[2]
 QUERIES = REPO / "tools" / "fresh_24h" / "queries.json"
 REQUIRED_TERM_PORTALS = {"linkedin", "jobsdb", "ctgoodjobs"}
 SUPPORTED_PORTALS = REQUIRED_TERM_PORTALS | {"freehire"}
+SCAN_DEPTHS = {"economy", "balanced", "coverage"}
+RETENTION_PREFERENCES = {"loose", "standard", "selective"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +36,14 @@ def main(argv: list[str] | None = None) -> int:
     queries = data.get("queries") or []
 
     errors: list[str] = []
+    workflow = data.get("workflow_preferences") or {}
+    if workflow:
+        if workflow.get("scan_depth") not in SCAN_DEPTHS:
+            errors.append("workflow_preferences.scan_depth must be economy|balanced|coverage")
+        if workflow.get("retention_preference") not in RETENTION_PREFERENCES:
+            errors.append(
+                "workflow_preferences.retention_preference must be loose|standard|selective"
+            )
     if data.get("setup_required"):
         if queries:
             errors.append("product template with setup_required=true must not ship job queries")

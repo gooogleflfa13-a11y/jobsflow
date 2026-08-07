@@ -26,14 +26,14 @@ python3 tools/fresh_24h/validate_queries.py \
 ```bash
 ./tools/fresh_24h/temp_two_pass.sh temp
 python3 tools/fresh_24h/push_to_gsheet.py \
-  --also-local --min-score 3.3 --mode temp
+  --also-local --mode temp
 ```
 
 Local-only tracking (no Google credentials):
 
 ```bash
 python3 tools/fresh_24h/push_to_gsheet.py \
-  --local-only --min-score 3.3 --mode temp
+  --local-only --mode temp
 ```
 
 This merges scored rows into the main local
@@ -48,10 +48,18 @@ blocks until those tasks are completed and the score is rerun. Use
 `temp` scans only since the last successful refresh; `daily` scans about 24
 hours. Add `--no-record` to preview without changing state.
 
-The pipeline scores title/teaser first, retrieves deeper text only for rows that
-meet the gate, then scores again. Cache and structured retrieval precede a
-time-budgeted browser fallback. Each row records pass-1, pass-2 and actual JD
-depth; shallow text is never labeled as a full JD.
+The pipeline scores title/teaser first to schedule deeper work, not to make an
+irreversible final decision. Rows meeting the direct gate continue, and valid
+cache hits, missing/short teasers, or gray-band scores are rescued as well.
+Every valid cache entry is read without consuming the scan-depth budget. Economy,
+balanced and coverage allow about 10, 20 and 40 cache-miss network retrievals.
+A row that cannot obtain full JD
+text stays visible as `provisional_needs_jd` / `待审-JD不足` and does not count
+as final. Pass 2 persists every deep score, then the user-selected loose 3.0,
+standard 3.3 or selective 3.5 preference creates the final list without another
+portal request. Each row records
+pass 1, pass 2, actual JD depth and assessment status; shallow text is never
+labeled as a full JD.
 
 ### Reliable detail fetch
 

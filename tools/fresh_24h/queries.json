@@ -3,6 +3,10 @@
   "description": "Industry-neutral product template. Run /setup to create a private search configuration.",
   "setup_required": true,
   "location_linkedin": "",
+  "workflow_preferences": {
+    "scan_depth": "balanced",
+    "retention_preference": "standard"
+  },
   "query_policy": {
     "mandatory_buckets": [],
     "notes": "No profession is the product default. /setup writes user-specific buckets under JobSearch_2026/00_Profile/queries.json."

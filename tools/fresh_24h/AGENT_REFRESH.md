@@ -30,11 +30,18 @@ runs must not advance the cursor. Use `--no-record` for previews and debugging.
 
 1. Scan titles and teasers using configured queries.
 2. Score pass 1 with the private scoring profile.
-3. Only rows meeting the default 3.3 gate continue.
-4. Check `02_Tracker/jds/cache/<sha256(url)[:16]>.json` first. A valid cache hit
-   is the only JD input and makes zero network requests. If absent, retrieve
-   structured detail; use Playwright only as a bounded fallback.
-5. Score pass 2 and record the actual JD depth.
+3. Treat 3.3 as the direct-routing line, not a destructive cutoff. Also rescue
+   valid cache hits, missing/short teasers and scores within the derived gray
+   band. Only an informative card below the rescue floor can be filtered here.
+4. Check `02_Tracker/jds/cache/<sha256(url)[:16]>.json` first. Every valid cache
+   hit makes zero network requests and does not consume the confirmed scan-depth
+   budget (`--max-deep` remains an advanced one-run override). If absent,
+   retrieve structured detail; use Playwright only as a bounded fallback.
+5. Score pass 2 and record every deep score, the actual JD depth and `评估状态`.
+   Apply the confirmed loose 3.0 / standard 3.3 / selective 3.5 preference only
+   after scoring. A preference change must reuse the saved score artifact and
+   issue no portal request. An unfetched card stays
+   visible as `provisional_needs_jd` / `待审-JD不足` and is not `final_kept`.
 6. For deep rows, process pending `position_profile` and
    `semantic_resume_match` tasks with `semantic_match_agent.py`. The former
    returns lane + company brief; the latter labels each verdict as direct,

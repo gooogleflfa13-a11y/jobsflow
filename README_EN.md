@@ -29,6 +29,17 @@ suffixes, Chinese experience wording, and date exclusion.
 
 The same update also adds several speed improvements without changing the workflow: two-pass scoring reuses scored artifacts and the URL-keyed JD cache; LinkedIn details are fetched serially by one long-lived Bun worker; Playwright deep fetches reuse one browser/context per scoring cycle and short-cache WAF, CAPTCHA, and timeout failures; Google Sheets pushes append new rows and update only changed rows with local formatting. First-time fetches remain subject to portal latency, rate limits, and CAPTCHA; a schema change triggers one safe full sync.
 
+Two-pass scoring also closes a recall gap where a portal card with no teaser
+could receive a low title-only score and never reach the full JD. The former
+single 3.3 control is now split in two. **Scan depth** controls cost: economy
+allows about 10, balanced 20 and coverage 40 cache-miss network detail fetches.
+**Retention preference** controls the user's shortlist: loose 3.0, standard
+3.3 or selective 3.5. Pass 1 keeps 3.3 only as an internal direct-routing line;
+valid cache hits, missing/short teasers and gray-band candidates are still
+rescued. Cache hits consume no network budget. Jobs without a full JD remain
+visible as `待审-JD不足` / `provisional_needs_jd`. Changing retention re-filters
+the saved deep scores and does not reopen a portal.
+
 Materials now also use a repeatable per-job Manifest: the job ID derives the package tier, JD keywords and recruiter-safe outbound filenames, while dependency fingerprints and explicit overrides survive reruns. Real JD/profile/lane changes mark old artifacts stale. A single validation report checks recruiter-name leaks, tier routing, incomplete sentences, Chinese residue in English materials, employer naming and the Cover Letter page limit before sending.
 
 Role titles now have an explicit contract as well: `role_display` retains the
@@ -46,11 +57,12 @@ silently combines multiple roles into a new title.
 
 The scan path now uses **portal-level parallel workers with serial queries inside each portal**. LinkedIn, JobsDB, and CTgoodjobs each run one worker, so the three portals can be searched at the same time while each portal keeps its original query order and pacing.
 
-Each worker stays alive for the duration of one scan and reuses the portal process. CTgoodjobs session headers are resolved once when its worker starts, reducing repeated Bun startup, network handshakes, and session bootstrap work. The `/scan` syntax, scoring gates, JD deep-read path, and materials workflow are unchanged: run `/scan temp` or `/scan daily` as usual.
+Each worker stays alive for the duration of one scan and reuses the portal process. CTgoodjobs session headers are resolved once when its worker starts, reducing repeated Bun startup, network handshakes, and session bootstrap work. The `/scan` syntax and materials workflow are unchanged: run `/scan temp` or `/scan daily` as usual. The latest uncertainty-aware pass-1 policy is described in the 2026-08-06 update above.
 
 This update targets scan wait time. Actual speed still depends on network latency, portal responses, rate limits/CAPTCHA, and retries. The base scan is deterministic and does not require an external LLM, so model capability does not change the worker parallelism. Workers exit after each scan so stale sessions are not kept indefinitely.
 
-- **Fewer wasted applications:** two-pass scoring filters before deep JD work.
+- **Fewer wrong applications and fewer silent misses:** pass 1 schedules work;
+  the full JD determines the final score, while insufficient-JD rows stay visible.
 - **More relevant materials:** company context and JD priorities drive the CV and cover letter.
 - **Reliable with smaller models:** deterministic preflight, evidence mapping, and quality gates prevent silent skips.
 - **Always user-approved:** JobsFlow never auto-submits an application.
@@ -96,6 +108,10 @@ industry context. The proposal is constrained by a machine-readable schema and
 is written only to the private workspace; invalid output falls back to the
 deterministic cross-industry configuration.
 
+Setup also asks two separate workflow questions: economy/balanced/coverage for
+network scan depth, and loose/standard/selective for final-list retention. The
+backward-compatible defaults are balanced plus standard.
+
 Job intent can evolve safely after setup. Use `/intent add ...` to add a
 direction or `/intent replace ...` to replace the search scope. JobsFlow turns
 the natural-language update into role and industry keywords and shows a preview
@@ -103,6 +119,9 @@ first; only an explicit `/intent confirm` writes the private search
 configuration. The next `/scan` uses the new configuration, while historical
 tracker rows and existing materials remain unchanged. If it is unclear whether
 the user wants to add or replace a direction, the assistant asks first.
+Use `/intent scan-depth economy|balanced|coverage` or `/intent retention
+loose|standard|selective` to preview either workflow change, then `/intent
+confirm`. Retention changes reuse the existing deep-score artifact.
 
 `/scan` defaults to the period since the last successful refresh. Use `/scan daily` for 24 hours or `/scan 3` for three hours. A failed portal run does not advance the refresh cursor.
 
@@ -171,13 +190,25 @@ being silently treated as completed semantic results.
 - URL-keyed JD cache entries are valid for 60 days by default and store the full
   text, source, character count and fetch time. Scoring, materials and rescoring
   reuse that cache.
-- Only pass-1 survivors enter deep work. Use `--max-deep` to cap deep retrievals;
-  `/scan temp` only checks jobs since the previous refresh.
+- Pass 1 uses 3.3 as an internal direct-routing threshold, not a destructive cutoff for
+  information-poor cards. Cache hits, missing/short teasers and gray-band jobs
+  are rescued for deep review.
+- Scan depth caps cache-miss network retrievals at about 10/20/40 for
+  economy/balanced/coverage; valid cache hits are free. Retention independently
+  selects loose 3.0, standard 3.3 or selective 3.5 from saved deep scores.
+  Unfetched rows remain explicit `provisional_needs_jd` review items, and
+  `/scan temp` still checks only jobs since the previous refresh.
 - LinkedIn uses CLI detail first; JobsDB is the only browser fallback; CTgoodjobs
   does not open a browser by default. Set `PORTAL_JD_BROWSER=0` to disable browser
   retrieval completely.
 - PDF conversion also uses a content-hash cache, so unchanged DOCX files are not
   converted again.
+
+Each run reports pass-1 and full-JD score distributions in four bands (`<3.0`,
+`3.0–3.3`, `3.3–3.5`, `3.5+`), together with cache hits, network fetches,
+budget-exhausted and provisional counts. The user can therefore change shortlist
+preference after seeing the distribution instead of treating one threshold as
+an objective measure of job quality.
 
 Each scored job also receives a versioned private assessment record. It stores
 the pass-1, pass-2 and final score snapshots, structured supported strengths and

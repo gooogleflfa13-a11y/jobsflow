@@ -34,6 +34,11 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.io_utils import atomic_write_json
+from tools.fresh_24h.policy import (
+    parse_retention_preference,
+    parse_scan_depth,
+    resolve_workflow_preferences,
+)
 from tools.profile_recovery import refresh_scoring_profile
 from tools.salary_parsing import AMBIGUOUS, INVALID, PARSED, parse_salary_range
 
@@ -408,6 +413,56 @@ def create_proposal(
     }
 
 
+def create_preference_proposal(
+    repo: Path,
+    *,
+    preference: str,
+    value: str,
+) -> dict[str, Any]:
+    """Preview a scan-cost or final-retention preference without writing it."""
+    profile_dir = private_profile_dir(repo)
+    config = _load(profile_dir / "queries.json")
+    if not config or config.get("setup_required"):
+        raise RuntimeError("没有私有搜索配置，请先运行 /setup")
+    before = resolve_workflow_preferences(config)
+    next_config = copy.deepcopy(config)
+    workflow = {
+        "scan_depth": before["scan_depth"],
+        "retention_preference": before["retention_preference"],
+    }
+    if preference == "scan_depth":
+        workflow["scan_depth"] = parse_scan_depth(value)
+    elif preference == "retention_preference":
+        workflow["retention_preference"] = parse_retention_preference(value)
+    else:
+        raise ValueError(f"未知工作流偏好：{preference}")
+    next_config["workflow_preferences"] = workflow
+    after = resolve_workflow_preferences(next_config)
+    current = _current_intent(profile_dir, config)
+    return {
+        "schema_version": 1,
+        "status": "pending_confirmation",
+        "created_at": _now(),
+        "operation": f"set_{preference}",
+        "input": _clean_text(value),
+        "current_intent": current,
+        "proposed_intent": current,
+        "recognized_terms": [],
+        "base_digest": _base_digest(profile_dir),
+        "diff": {
+            "workflow_preferences": {
+                "before": {
+                    "scan_depth": before["scan_depth"],
+                    "retention_preference": before["retention_preference"],
+                },
+                "after": workflow,
+                "resolved_after": after,
+            }
+        },
+        "next_config": next_config,
+    }
+
+
 def save_proposal(repo: Path, proposal: dict[str, Any]) -> Path:
     path = private_profile_dir(repo) / PROPOSAL_NAME
     atomic_write_json(path, proposal)
@@ -444,9 +499,10 @@ def apply_proposal(repo: Path) -> dict[str, Any]:
         "history": history[-20:],
     }
     atomic_write_json(profile_dir / STATE_NAME, state)
-    # Recompute derived industry keywords from the confirmed query terms while
-    # retaining existing resume evidence.  The scorer will read this on scan.
-    refresh_scoring_profile(repo, persist=True)
+    # Only a search-intent change needs keyword recovery. Workflow preferences
+    # alter cost/list selection and must not rewrite the user's scoring profile.
+    if proposal.get("operation") in {"add", "replace"}:
+        refresh_scoring_profile(repo, persist=True)
     proposal["status"] = "applied"
     proposal["applied_at"] = _now()
     proposal.pop("next_config", None)
@@ -466,11 +522,28 @@ def _display(config: dict[str, Any], profile_dir: Path) -> None:
     print(f"当前意向：{current}")
     print(f"检索词：{len(config.get('relevance_keywords') or [])} 个；查询：{len(config.get('queries') or [])} 条")
     print(f"行业词：{len(scoring.get('preferred_industry_keywords') or [])} 个；状态：{(scoring.get('profile_health') or {}).get('status', 'unknown')}")
+    workflow = resolve_workflow_preferences(config)
+    print(
+        f"扫描深度：{workflow['scan_depth_label']}（最多 {workflow['max_network_deep']} 个网络深取）；"
+        f"保留偏好：{workflow['retention_label']}（完整 JD 最终线 {workflow['final_gate']:.1f}）"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Preview and confirm incremental job-search intent updates")
-    parser.add_argument("action", choices=("show", "add", "replace", "set", "confirm", "cancel"))
+    parser.add_argument(
+        "action",
+        choices=(
+            "show",
+            "add",
+            "replace",
+            "set",
+            "scan-depth",
+            "retention",
+            "confirm",
+            "cancel",
+        ),
+    )
     parser.add_argument("text", nargs="?", help="new or replacement intent text")
     parser.add_argument("--repo", default=".", help="repository root")
     parser.add_argument("--bucket", help="existing query bucket for an added query")
@@ -491,11 +564,41 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.action == "confirm":
             proposal = apply_proposal(repo)
-            print("意向变更已确认并写入私有配置。下次 /scan 将使用新检索词。")
-            print(f"识别关键词：{', '.join(proposal.get('recognized_terms') or [])}")
+            if str(proposal.get("operation") or "").startswith("set_"):
+                config = _load(profile_dir / "queries.json")
+                workflow = resolve_workflow_preferences(config)
+                print("工作流偏好已确认并写入私有配置。下次 /scan 自动生效。")
+                print(
+                    f"扫描深度：{workflow['scan_depth_label']}（最多 {workflow['max_network_deep']} 个网络深取）；"
+                    f"保留偏好：{workflow['retention_label']}（最终线 {workflow['final_gate']:.1f}）"
+                )
+            else:
+                print("意向变更已确认并写入私有配置。下次 /scan 将使用新检索词。")
+                print(f"识别关键词：{', '.join(proposal.get('recognized_terms') or [])}")
             return 0
         if not args.text:
-            raise ValueError("add/replace 需要提供意向内容")
+            raise ValueError("该操作需要提供内容")
+        if args.action in {"scan-depth", "retention"}:
+            preference = (
+                "scan_depth"
+                if args.action == "scan-depth"
+                else "retention_preference"
+            )
+            proposal = create_preference_proposal(
+                repo, preference=preference, value=args.text
+            )
+            save_proposal(repo, proposal)
+            change = proposal["diff"]["workflow_preferences"]
+            resolved = change["resolved_after"]
+            print("已生成工作流偏好预览，尚未修改配置。")
+            print(
+                f"扫描深度：{resolved['scan_depth_label']}（最多 {resolved['max_network_deep']} 个网络深取）"
+            )
+            print(
+                f"保留偏好：{resolved['retention_label']}（完整 JD 最终线 {resolved['final_gate']:.1f}）"
+            )
+            print("请检查后运行：python3 tools/update_intent.py confirm")
+            return 0
         operation = "replace" if args.action in {"replace", "set"} else "add"
         proposal = create_proposal(
             repo,

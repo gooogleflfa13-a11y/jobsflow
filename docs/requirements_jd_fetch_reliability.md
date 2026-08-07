@@ -8,7 +8,7 @@
 
 ## 1. 背景与问题
 
-两段式评分（gate 3.3 → deep JD → rescore）和材料定制都依赖详情页完整 JD。当前 `portal_jd_browser.py` 使用 Playwright 无头抓取 JobsDB / CTgoodjobs 详情页，但：
+两段式评分（内部初评调度/不确定性救援 → 用户扫描深度 → cache/限额 deep JD → 用户保留偏好）和材料定制都依赖详情页完整 JD。当前 `portal_jd_browser.py` 使用 Playwright 无头抓取 JobsDB / CTgoodjobs 详情页，但：
 
 1. **Cloudflare WAF 概率性拦截**：详情页存在人机验证（"Verifying you are human…"），无头/自动化请求偶发被识别，返回验证页而非职位内容。已确认现象：`FAIL (waf) portal=jobsdb chars=0`，连续多次重试仍被拦截（实测 3/3 失败）；也有成功案例（同工具抓取其他岗位成功），属概率性风控。
 2. **无重试机制**：抓取失败即返回，上层（deep 评分）只能退化为 teaser，影响评分精度与材料定制质量。

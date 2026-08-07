@@ -34,6 +34,10 @@ from typing import Any
 from tools.io_utils import atomic_write_json
 from tools.language_gate import parse_candidate_languages
 from tools.salary_parsing import AMBIGUOUS, INVALID, PARSED, parse_salary_range
+from tools.fresh_24h.policy import (
+    normalize_retention_preference,
+    normalize_scan_depth,
+)
 
 REPO = Path(__file__).resolve().parent
 
@@ -408,6 +412,23 @@ def ask_semantic_profile_level() -> str:
     return level
 
 
+def ask_workflow_preferences() -> dict[str, str]:
+    """Ask separately about retrieval cost and final-list selectivity."""
+    print("\n── Step 6: Scan and shortlist preferences ──\n")
+    print("  扫描深度：节能（约 10 个网络深取）/ 平衡（约 20 个）/ 广覆盖（约 40 个）")
+    scan_depth = normalize_scan_depth(
+        ask("选择扫描深度（节能/平衡/广覆盖）", "平衡")
+    )
+    print("  保留偏好：宽松 3.0 / 标准 3.3 / 精选 3.5；只影响完整 JD 后的清单")
+    retention = normalize_retention_preference(
+        ask("选择最终清单偏好（宽松/标准/精选）", "标准")
+    )
+    return {
+        "scan_depth": scan_depth,
+        "retention_preference": retention,
+    }
+
+
 # ── Resume ────────────────────────────────────────────────────────────
 
 def read_resume(folder: Path) -> str:
@@ -778,6 +799,16 @@ def build_queries_config(
     return {
         "description": "Jobsflow search queries generated from local setup preferences",
         "location_linkedin": location,
+        "workflow_preferences": {
+            "scan_depth": normalize_scan_depth(
+                (profession.get("workflow_preferences") or {}).get("scan_depth")
+            ),
+            "retention_preference": normalize_retention_preference(
+                (profession.get("workflow_preferences") or {}).get(
+                    "retention_preference"
+                )
+            ),
+        },
         "query_policy": {
             "mandatory_buckets": mandatory_buckets,
             "notes": "Private setup output; buckets reflect this user's target domain.",
@@ -926,8 +957,9 @@ def generate_config(
     tracking: dict,
     prereqs: dict,
     semantic_upper_level: str = "medium",
+    workflow_preferences: dict[str, str] | None = None,
 ) -> int:
-    print("\n── Step 5: Generating config ──\n")
+    print("\n── Step 7: Generating config ──\n")
 
     name = extract_name(resume_text) or ask("Your name", "Your Name")
     phone = extract_phone(resume_text) or ask("Your phone", "+852 XXXX XXXX")
@@ -944,6 +976,7 @@ def generate_config(
     prof = classify_profession(intent, resume_text)
     prof["candidate_languages"] = prof_languages
     prof["semantic_profile"] = semantic_profile_for_level(semantic_upper_level)
+    prof["workflow_preferences"] = dict(workflow_preferences or {})
     # Parse only explicit, machine-checkable constraints from the user's intent;
     # missing values stay unknown rather than being guessed from résumé history.
     intent_lower = str(intent or "").casefold()
@@ -1306,12 +1339,14 @@ def main(argv: list[str] | None = None) -> int:
     resume_text = read_resume(folder)
     intent = ask("\nWhat jobs are you looking for?\n  (e.g. 'Junior paralegal in Hong Kong, PRC background')")
     semantic_upper_level = ask_semantic_profile_level()
+    workflow_preferences = ask_workflow_preferences()
     generate_config(
         resume_text,
         intent,
         tracking,
         prereqs,
         semantic_upper_level=semantic_upper_level,
+        workflow_preferences=workflow_preferences,
     )
 
     print(f"\n  Done! Config files generated.")

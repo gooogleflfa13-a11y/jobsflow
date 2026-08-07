@@ -4,7 +4,7 @@
 批量评分。当前产品的唯一检索/评分主线是：
 
 ```text
-/scan → two-pass gate 3.3 → /push 或 /push --local-only
+/scan → internal pass-1 scheduling/rescue → user scan depth → cached/bounded deep JD → user retention preference → /push 或 /push --local-only
 ```
 
 用户需要为单个岗位做深度分析时，请使用 `/materials <岗位编号>`；材料流程会

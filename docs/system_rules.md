@@ -86,16 +86,26 @@ Their actual queries and relevance rules are candidate- and profession-specific.
 | Step | Rule |
 |------|------|
 | Scan | Collect title, URL and teaser with bounded portal budgets |
-| Pass 1 | Score using the private profile |
-| Gate | Default threshold is 3.3 |
-| JD | Prefer cache/structured retrieval; use browser only as a bounded fallback |
-| Pass 2 | Rescore with the best available JD depth |
-| Track | Record pass-1, pass-2 and actual JD depth |
+| Pass 1 | Score using the private profile, then use that score only to schedule deep work |
+| Rescue | Route valid cache hits, missing/short teasers and the derived gray band onward even when pass 1 is below 3.3 |
+| JD | Read every valid cache hit without charging the network budget; use structured retrieval/browser only as a bounded fallback |
+| Scan depth | User chooses economy (~10), balanced (~20, default) or coverage (~40) cache-miss network deep fetches; cache hits are free |
+| Pass 2 | Rescore with the best available JD depth and retain the raw deep score for network-free re-filtering |
+| Retention | User chooses loose 3.0, standard 3.3 (default) or selective 3.5 for the final list; this never changes pass-1 routing or network budget |
+| Track | Record pass-1, pass-2, actual JD depth and assessment status; unfetched rows are `provisional_needs_jd` |
 | Assess | Persist structured strengths/gaps with JD/profile hashes under the private tracker |
 | Materials | Never auto-generate during scan |
 
 - Preview means no sheet push and `--no-record`.
 - Do not claim full-JD analysis when only a teaser is available.
+- Never hard-reject an information-poor card solely because its title-only
+  pass-1 score is below 3.3. If deep text cannot be obtained within policy or
+  budget, retain it as an explicit provisional review item instead.
+- Scan depth limits cache-miss network retrievals, not valid cache reads.
+- Raw deep scores are persisted before retention filtering. Changing retention
+  must reuse that artifact and must not trigger another portal request.
+- Rows below the selected final retention line are omitted from the new batch;
+  provisional rows remain visible but do not count as final selected jobs.
 - Follow the machine-readable run contract; do not ask a lower-capability model to
   reinterpret portal success, counters or next actions.
 - Hard rejection and keyword relevance must come from the private configuration,

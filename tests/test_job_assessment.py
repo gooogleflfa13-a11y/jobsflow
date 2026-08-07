@@ -209,8 +209,49 @@ def test_two_pass_writes_assessment_for_a_provisional_result(tmp_path):
     )
     assert len(assessment_files) == 1
     record = json.loads(assessment_files[0].read_text(encoding="utf-8"))
-    assert record["status"] == "provisional"
+    assert record["status"] == "provisional_needs_jd"
     assert record["scores"]["pass1"]["score"] == record["scores"]["final"]["score"]
+
+
+def test_deep_assessment_status_is_independent_of_user_retention_line(
+    tmp_path, monkeypatch
+):
+    jd = "Process automation and operational reporting. " * 20
+
+    def deep_fetch(hit, *, repo):
+        hit["_enrich"] = {"mode": "browser", "ok": True}
+        hit["_deep_jd_full"] = jd
+        return jd, "deep"
+
+    monkeypatch.setattr(two_pass_score, "deep_enrich_hit", deep_fetch)
+    rows, _ = two_pass_score.run_two_pass(
+        [
+            {
+                "title": "Operations Analyst",
+                "company": "Acme",
+                "source": "jobsdb",
+                "url": "https://example.com/jobs/retention-independent",
+                "teaser": "Operations",
+            }
+        ],
+        gate_pass1=0.0,
+        min_final=5.0,
+        repo=tmp_path,
+        profile=_profile(),
+        max_deep=1,
+        sleep_s=0.0,
+        drop_below_final=False,
+    )
+
+    assert rows[0]["评估状态"] == "below_current_retention"
+    assessment_file = next(
+        (tmp_path / "JobSearch_2026" / "02_Tracker" / "job_assessments").glob(
+            "*.json"
+        )
+    )
+    assessment = json.loads(assessment_file.read_text(encoding="utf-8"))
+    assert assessment["status"] in {"ready", "pending"}
+    assert assessment["status"] != "final_filtered"
 
 
 def test_materials_payload_reuses_current_assessment_as_a_low_model_input(tmp_path):

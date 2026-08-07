@@ -166,6 +166,21 @@ def test_semantic_profile_calibration_is_explicit_and_private_configurable():
     assert semantic["forbid_invented_experience"] is True
 
 
+def test_setup_writes_independent_scan_and_retention_preferences():
+    prof = setup.classify_profession("operations analyst", "")
+    prof["workflow_preferences"] = {
+        "scan_depth": "economy",
+        "retention_preference": "loose",
+    }
+
+    queries = setup.build_queries_config(profession=prof, location="Hong Kong")
+
+    assert queries["workflow_preferences"] == {
+        "scan_depth": "economy",
+        "retention_preference": "loose",
+    }
+
+
 def test_unknown_industry_fallback_uses_role_directions_not_seniority():
     prof = setup.classify_profession("clinical research coordinator", "")
 

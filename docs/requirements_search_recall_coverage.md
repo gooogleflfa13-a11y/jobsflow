@@ -327,7 +327,7 @@ URL / job id / company-title 去重
 
 本需求暂不改变：
 
-- `two_pass_score.py` 的评分维度和门槛；
+- `two_pass_score.py` 的六维评分维度；初评调度、扫描深度和最终保留偏好由评分召回与成本控制策略单独管理；
 - 用户画像的事实基线/能力上沿规则；
 - CV、Cover Letter 和 PDF 生成；
 - `/apply` 的人工确认原则；

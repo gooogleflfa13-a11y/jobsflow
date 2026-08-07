@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from tools.update_intent import _extract_constraints, apply_proposal, create_proposal, save_proposal
+from tools.update_intent import (
+    _extract_constraints,
+    apply_proposal,
+    create_preference_proposal,
+    create_proposal,
+    save_proposal,
+)
 
 
 def _write_private_profile(root):
@@ -119,3 +125,31 @@ def test_ambiguous_salary_constraint_is_explicitly_reviewable(tmp_path):
     saved = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
     assert saved["scoring_profile"]["minimum_salary"] is None
     assert saved["scoring_profile"]["minimum_salary_parse_status"] == "ambiguous"
+
+
+def test_scan_depth_preference_uses_preview_and_confirmation(tmp_path):
+    profile = _write_private_profile(tmp_path)
+    before = (profile / "queries.json").read_text(encoding="utf-8")
+
+    proposal = create_preference_proposal(
+        tmp_path, preference="scan_depth", value="节能"
+    )
+
+    assert proposal["status"] == "pending_confirmation"
+    assert proposal["diff"]["workflow_preferences"]["after"]["scan_depth"] == "economy"
+    assert (profile / "queries.json").read_text(encoding="utf-8") == before
+
+    save_proposal(tmp_path, proposal)
+    apply_proposal(tmp_path)
+    saved = json.loads((profile / "queries.json").read_text(encoding="utf-8"))
+    assert saved["workflow_preferences"]["scan_depth"] == "economy"
+    assert saved["workflow_preferences"]["retention_preference"] == "standard"
+
+
+def test_unknown_workflow_preference_is_rejected_instead_of_silently_reset(tmp_path):
+    _write_private_profile(tmp_path)
+
+    with pytest.raises(ValueError, match="扫描深度"):
+        create_preference_proposal(
+            tmp_path, preference="scan_depth", value="超级模式"
+        )
