@@ -34,6 +34,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 # allow `python3 -m tools.job_materials` from repo root
 REPO = Path(__file__).resolve().parents[2]
@@ -61,9 +62,19 @@ from tools.job_materials.jd_store import (  # noqa: E402
     read_jd,
     write_jd,
 )
+from tools.job_materials.build_jobs_json import build_jobs_json  # noqa: E402
 from tools.job_materials.llmo import audit_plain_text  # noqa: E402
 from tools.job_materials.paths import LANES, jobsearch_root  # noqa: E402
 from tools.job_materials.packages import resolve_package  # noqa: E402
+from tools.job_materials.manifest import (  # noqa: E402
+    build_job_manifest,
+    load_job_manifest,
+    refresh_job_manifest,
+    role_filename_component,
+    update_manifest_from_payload,
+    write_job_manifest,
+)
+from tools.job_materials.role_titles import build_role_title_contract  # noqa: E402
 from tools.job_materials.publisher import snapshot_context  # noqa: E402
 from tools.job_materials.tailor import (  # noqa: E402
     build_tailored_payload,
@@ -90,6 +101,8 @@ from tools.fresh_24h.job_assessment import (  # noqa: E402
     load_job_assessment,
 )
 from tools.audit_log import append_audit_event  # noqa: E402
+from tools.core_applications.validate_package import validate_package  # noqa: E402
+from tools.io_utils import atomic_write_json, atomic_write_text  # noqa: E402
 
 
 def _pkg(path: str | None, *, job_id: str | None = None) -> Path | None:
@@ -140,6 +153,78 @@ def _parse_title_company(package: Path) -> tuple[str, str]:
             title = title if title != package.name else m.group(1).strip()
             company = company or m.group(2).strip()
     return title, company
+
+
+def _ensure_material_manifest(
+    *,
+    root: Path,
+    package: Path,
+    title: str,
+    company: str,
+    lane: str,
+    jd: str,
+    profile: dict[str, Any],
+    snapshot: dict[str, str],
+) -> dict[str, Any]:
+    """Refresh the generated manifest while keeping user-owned overrides."""
+    previous = load_job_manifest(package)
+    previous_job = previous.get("job") if isinstance(previous.get("job"), dict) else {}
+    def _meaningful(*values: Any) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text and text.casefold() not in {"—", "–", "-", "unknown", "n/a", "na"}:
+                return text
+        return ""
+
+    publisher_name = (
+        _meaningful(
+            snapshot.get("publisher_name"),
+            snapshot.get("publisher"),
+            previous_job.get("publisher_name"),
+            company,
+        )
+    )
+    publisher_type = (
+        _meaningful(snapshot.get("publisher_type"), previous_job.get("publisher_type"), "unknown")
+    )
+    employer_name = _meaningful(
+        snapshot.get("employer_name"),
+        snapshot.get("employer"),
+        previous_job.get("employer_name"),
+    )
+    row = {
+        "岗位编号": package_id_from_path(package),
+        "职位": title,
+        "公司": publisher_name,
+        "发布者": publisher_name,
+        "发布者类型": publisher_type,
+        "用人公司": employer_name,
+        "简历版本": lane,
+        "层级": (previous.get("tier") or {}).get("label") or "",
+        "链接": extract_url_from_snapshot(package),
+        "来源": snapshot.get("source") or "unknown",
+        "材料语言": snapshot.get("material_language") or "en",
+    }
+    if previous:
+        return refresh_job_manifest(
+            root=root,
+            package=package,
+            row=row,
+            tracker_path=Path(previous.get("provenance", {}).get("tracker_path") or "")
+            if previous.get("provenance", {}).get("tracker_path")
+            else None,
+            jd_text=jd,
+            profile=profile,
+        )
+    manifest = build_job_manifest(
+        root=root,
+        package=package,
+        row=row,
+        jd_text=jd,
+        profile=profile,
+    )
+    write_job_manifest(package, manifest)
+    return manifest
 
 
 def _known_application_answers(package: Path) -> dict[str, str]:
@@ -310,7 +395,7 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         save_base(root, base)
 
     fc = (base.get("factcheck") or {}).get("status")
-    if fc != "passed" and not args.allow_unchecked:
+    if fc not in {"passed", "capability_profile"} and not args.allow_unchecked:
         print(
             f"BASE {lane} factcheck={fc}. Fix evidence or: base factcheck --lane {lane}\n"
             f"Or pass --allow-unchecked (not recommended).",
@@ -328,10 +413,38 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         return 2
 
     scoring_profile = load_scoring_profile(root)
+    manifest = _ensure_material_manifest(
+        root=root,
+        package=package,
+        title=title,
+        company=company,
+        lane=lane,
+        jd=jd,
+        profile=scoring_profile,
+        snapshot=publisher_context,
+    )
+    manifest_job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    # Material-facing role names are normalized once in the manifest and reused
+    # on every rerun: obvious metadata parentheses may be removed, while
+    # substantive specialisms stay in their original parentheses. A slash-
+    # separated title keeps its source/display form and uses one selected
+    # primary role for outbound material.
+    title = str(manifest_job.get("role_material") or title).strip()
+    company = str(manifest_job.get("company_source") or company).strip()
+    role_selection = manifest_job.get("role_selection") if isinstance(manifest_job.get("role_selection"), dict) else {}
+    if role_selection.get("confirmation_needed"):
+        alternatives = ", ".join(str(item) for item in manifest_job.get("role_alternates") or [])
+        print(
+            "Role confirmation recommended: using primary "
+            f"{title!r}; alternatives={alternatives or '—'}. "
+            "Use `python3 -m tools.job_materials role choose --package … --title …` "
+            "to select another detected title before finalizing materials."
+        )
     preflight = build_application_preflight(
         jd,
         known_answers=_known_application_answers(package),
         candidate_languages=scoring_profile.get("candidate_languages"),
+        profile=scoring_profile,
     )
     write_application_preflight(package, preflight)
     research = load_company_research(
@@ -391,15 +504,25 @@ def cmd_tailor(args: argparse.Namespace) -> int:
         use_llm=bool(args.llm),
         publisher_context=publisher_context,
         job_assessment=assessment,
+        manifest=manifest,
     )
     payload["application_preflight"] = {
         "ready_for_apply": preflight["ready_for_apply"],
         "next_action": preflight["next_action"],
+        "questions": preflight.get("questions") or [],
+        "review_items": preflight.get("review_items") or [],
+        "warnings": preflight.get("warnings") or [],
         "question_ids": [item["id"] for item in preflight["questions"]],
         "review_ids": [item["id"] for item in preflight["review_items"]],
         "warning_ids": [item["id"] for item in preflight.get("warnings") or []],
     }
     write_tailor_outputs(package, payload)
+    manifest = update_manifest_from_payload(package, payload)
+    if manifest:
+        print(
+            f"Updated {package / 'job_manifest.json'} "
+            f"(artifacts={','.join(sorted(manifest.get('artifacts') or {}))})"
+        )
     ref = write_base_master_ref(package, lane, root)
     if ref:
         print(f"Wrote {ref}")
@@ -454,6 +577,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         jd,
         known_answers=_known_application_answers(package),
         candidate_languages=scoring_profile.get("candidate_languages"),
+        profile=scoring_profile,
     )
     write_application_preflight(package, value)
     print(json.dumps(value, ensure_ascii=False, indent=2))
@@ -568,6 +692,167 @@ def cmd_llmo(args: argparse.Namespace) -> int:
     result = audit_plain_text(text, kind=args.kind, expected_contact_tokens=contacts)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if not result.get("human_review_required") else 4
+
+
+def cmd_role(args: argparse.Namespace) -> int:
+    """Show or confirm the primary title used by one material package."""
+    package = _pkg(args.package, job_id=getattr(args, "job_id", None))
+    if package is None or not package.is_dir():
+        print(f"not a package dir: {package}", file=sys.stderr)
+        return 2
+    manifest = load_job_manifest(package)
+    if not manifest:
+        print("job_manifest.json missing — run /materials or package creation first", file=sys.stderr)
+        return 2
+    job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    display = str(job.get("role_display") or job.get("role_material") or "").strip()
+    contract = job.get("role_title_contract")
+    if not isinstance(contract, dict):
+        contract = build_role_title_contract(
+            display,
+            selected_primary=str((manifest.get("overrides") or {}).get("role_primary") or ""),
+        )
+    if args.action == "show":
+        print(json.dumps(contract, ensure_ascii=False, indent=2))
+        return 0
+    requested = str(args.title or "").strip()
+    if not requested:
+        print("role choose requires --title", file=sys.stderr)
+        return 2
+    selected = build_role_title_contract(display, selected_primary=requested)
+    if selected.get("selection_mode") != "user_override":
+        choices = [str(item.get("material") or item.get("display") or "") for item in selected.get("variants") or []]
+        print(
+            "title is not one of the detected role variants; choose one of: "
+            + ", ".join(choice for choice in choices if choice),
+            file=sys.stderr,
+        )
+        return 2
+    overrides = manifest.get("overrides") if isinstance(manifest.get("overrides"), dict) else {}
+    overrides = dict(overrides)
+    overrides["role_primary"] = selected.get("primary")
+    manifest["overrides"] = overrides
+    # Rebuild the generated role fields while retaining the existing JD/profile
+    # fingerprints and user-owned wording.  The manifest is the sole writer for
+    # this selection, so later tailor runs use exactly the confirmed primary.
+    refreshed = build_role_title_contract(display, selected_primary=str(selected.get("primary") or ""))
+    job = dict(job)
+    job.update(
+        {
+            "role_title_contract": refreshed,
+            "role_material": refreshed.get("primary"),
+            "role_primary": refreshed.get("primary"),
+            "role_alternates": list(refreshed.get("alternates") or []),
+            "role_specialisms": list(refreshed.get("specialisms") or []),
+            "role_parentheticals": list(refreshed.get("primary_parentheticals") or []),
+            "role_selection": {
+                "mode": "user_override",
+                "confirmation_needed": bool(refreshed.get("confirmation_needed")),
+                "policy": refreshed.get("policy"),
+            },
+        }
+    )
+    manifest["job"] = job
+    generated = manifest.get("generated") if isinstance(manifest.get("generated"), dict) else {}
+    generated = dict(generated)
+    generated["role_fn"] = role_filename_component(str(refreshed.get("primary") or "Application"))
+    manifest["generated"] = generated
+    artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+    for name in ("resume", "cover_letter", "application_email", "validation"):
+        item = artifacts.get(name)
+        if isinstance(item, dict) and item.get("status") not in {None, "", "not_generated"}:
+            item.update(
+                {
+                    "status": "stale",
+                    "stale_reason": "role_selection_changed",
+                    "changed_inputs": ["job_context_sha256"],
+                }
+            )
+    manifest["artifacts"] = artifacts
+    write_job_manifest(package, manifest)
+    print(f"Confirmed primary role: {refreshed.get('primary')}")
+    if refreshed.get("alternates"):
+        print(f"Alternatives retained for traceability: {', '.join(refreshed['alternates'])}")
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Run the manifest-aware release gate for one selected package."""
+    package = _pkg(args.package, job_id=getattr(args, "job_id", None))
+    if package is None or not package.is_dir():
+        print(f"not a package dir: {package}", file=sys.stderr)
+        return 2
+    manifest = load_job_manifest(package)
+    if not manifest:
+        print(
+            "job_manifest.json missing — run package creation or tailor first",
+            file=sys.stderr,
+        )
+        return 2
+    job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    role = str(job.get("role_material") or job.get("role_display") or "").strip()
+    company = str(job.get("company_out") or "").strip()
+    errors = validate_package(
+        package,
+        company,
+        role,
+        job_manifest=manifest,
+    )
+    report = {
+        "schema_version": 1,
+        "job_id": manifest.get("job_id"),
+        "package": str(package.resolve()),
+        "status": "passed" if not errors else "failed",
+        "errors": errors,
+        "contract": {
+            "role": role,
+            "verified_employer": company,
+            "publisher_type": job.get("publisher_type") or "unknown",
+        },
+    }
+    manifest.setdefault("artifacts", {})["validation"] = {
+        "status": report["status"],
+        "error_count": len(errors),
+        "checked_manifest_schema": manifest.get("schema_version"),
+    }
+    write_job_manifest(package, manifest)
+    atomic_write_json(package / "materials_validation.json", report)
+    lines = [
+        "# Materials validation",
+        "",
+        f"- status: **{report['status']}**",
+        f"- job_id: `{manifest.get('job_id')}`",
+        f"- role: `{role}`",
+        f"- verified employer: `{company or 'not named'}`",
+        "",
+        "## Findings",
+    ]
+    if errors:
+        lines.extend(f"- {error}" for error in errors)
+    else:
+        lines.append("- No contract violations found.")
+    atomic_write_text(package / "materials_validation.md", "\n".join(lines) + "\n")
+    print(f"{report['status'].upper()} {manifest.get('job_id')} → {package}")
+    for error in errors:
+        print(f"  - {error}")
+    return 0 if not errors else 1
+
+
+def cmd_build_jobs(args: argparse.Namespace) -> int:
+    """Generate the private tracker-backed batch manifest."""
+    if not args.all_jobs and not args.job_id:
+        print("build-jobs requires --job-id (repeatable) or --all", file=sys.stderr)
+        return 2
+    result = build_jobs_json(
+        args.root,
+        job_ids=None if args.all_jobs else args.job_id,
+        output=args.output,
+        create_packages=not args.no_create_packages,
+    )
+    output = args.output or (args.root / "02_Tracker" / "jobs.generated.json")
+    print(f"Wrote {len(result.get('jobs') or [])} job manifest(s)")
+    print(f"Output: {output}")
+    return 0
 
 
 def cmd_pipeline(args: argparse.Namespace) -> int:
@@ -708,6 +993,35 @@ def main(argv: list[str] | None = None) -> int:
     p_audit.add_argument("--kind", choices=["cv", "cover_letter", "application_email"], default="cv")
     p_audit.add_argument("--contact", action="append", default=[], help="Expected contact token; repeatable")
     p_audit.set_defaults(func=cmd_llmo)
+
+    p = sub.add_parser(
+        "role",
+        help="Inspect or confirm the one primary role selected from a slash-separated title",
+    )
+    p.add_argument("action", choices=["show", "choose"])
+    p.add_argument("--package", default=None, help="Package path (or use --job-id)")
+    p.add_argument("--job-id", default=None)
+    p.add_argument("--title", default="", help="One detected role variant for `role choose`")
+    p.set_defaults(func=cmd_role)
+
+    p = sub.add_parser(
+        "validate",
+        help="Validate one package against its generated job_manifest.json",
+    )
+    p.add_argument("--package", default=None, help="Package path (or use --job-id)")
+    p.add_argument("--job-id", default=None, help="Job ID resolved from the local tracker")
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser(
+        "build-jobs",
+        help="Generate private tracker-backed job manifests for a materials batch",
+    )
+    p.add_argument("--root", type=Path, default=jobsearch_root())
+    p.add_argument("--job-id", action="append", default=[])
+    p.add_argument("--all", action="store_true", dest="all_jobs")
+    p.add_argument("--output", type=Path, default=None)
+    p.add_argument("--no-create-packages", action="store_true")
+    p.set_defaults(func=cmd_build_jobs)
 
     p = sub.add_parser("base", help="A–F bases sync/factcheck (required before trustworthy tailor)")
     p.add_argument("action", choices=["list", "sync", "factcheck", "show"])

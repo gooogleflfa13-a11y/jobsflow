@@ -40,6 +40,7 @@
     "adjacent_keywords": [],
     "evidence_keywords": [],
     "preferred_industry_keywords": [],
+    "candidate_languages": [],
     "track_mapping": {
       "A": "Target A",
       "B": "Target B",

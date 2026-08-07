@@ -23,6 +23,7 @@ from tools.job_materials.jd_store import jd_meta
 from tools.job_materials.llmo import build_llmo_contract
 from tools.job_materials.paths import find_latest_cl_master_docx, find_latest_master_docx
 from tools.job_materials.publisher import build_material_filenames, classify_publisher
+from tools.job_materials.role_titles import build_role_title_contract
 from tools.fresh_24h.job_assessment import assessment_context
 
 
@@ -261,6 +262,22 @@ FOCUS_EVIDENCE_HINTS = {
 }
 
 
+# Chinese counterparts for JD focus categories so bilingual capability bases
+# (G lane facts_anchor/capability_upper) still map to English JD focus words.
+_CN_FOCUS_HINTS = {
+    "process_design_and_monitoring": "流程 程序 控制 监测 检查 治理 制度 规范",
+    "stakeholder_partnership": "协调 跨部门 沟通 协作 利益相关",
+    "technology_enablement": "技术 数字化 数据 自动化 系统 平台",
+    "regulatory_analysis": "监管 法规 政策 合规 许可 牌照 法律",
+    "training_and_communication": "培训 宣讲 演示 沟通 汇报",
+    "delivery_and_execution": "执行 交付 落地 实施 管理 维护",
+    "analysis_and_decision": "分析 研究 评估 决策 尽调 风险",
+    "customer_and_commercial": "客户 商业 市场 合同 交易",
+    "leadership_and_ownership": "主导 负责 牵头 规划 战略",
+    "quality_and_reliability": "质量 审计 合规 核查 准确",
+}
+
+
 def build_evidence_map(
     focus: list[str],
     base_bullets: list[str],
@@ -268,12 +285,19 @@ def build_evidence_map(
     result: dict[str, list[str]] = {}
     for item in focus:
         hints = FOCUS_EVIDENCE_HINTS.get(item, item.replace("_", " "))
-        relevant = [
-            bullet
-            for bullet in base_bullets
-            if _jd_item_relevance(bullet, hints) > 0
-        ]
-        result[item] = rank_by_jd(relevant, hints)[:2]
+        cn = _CN_FOCUS_HINTS.get(item, "")
+        combined = f"{hints} {cn}".strip()
+        cn_words = [w for w in cn.split() if w]
+        relevant = []
+        for bullet in base_bullets:
+            if _jd_item_relevance(bullet, combined) > 0:
+                relevant.append(bullet)
+                continue
+            # Bilingual fallback: a Chinese capability bullet that contains any
+            # Chinese hint word (e.g. 合规/许可/监管) counts as evidence.
+            if cn_words and any(w in bullet for w in cn_words):
+                relevant.append(bullet)
+        result[item] = rank_by_jd(relevant, combined)[:2]
     return result
 
 
@@ -289,7 +313,7 @@ def build_quality_gate(
     blockers = []
     if shallow:
         blockers.append("full_jd")
-    if base_factcheck != "passed":
+    if base_factcheck not in {"passed", "capability_profile"}:
         blockers.append("fact_checked_base")
     if not str(research.get("nature") or "").strip():
         blockers.append("company_nature")
@@ -337,7 +361,7 @@ def build_quality_gate(
         "generic_fallback_blockers": generic_fallback_blockers,
         "checks": {
             "full_jd": not shallow,
-            "fact_checked_base": base_factcheck == "passed",
+            "fact_checked_base": base_factcheck in {"passed", "capability_profile"},
             "company_context": bool(
                 research.get("nature") and research.get("business")
             ),
@@ -444,6 +468,9 @@ def build_role_industry_match_contract(
             "reference": "generic_cover_letter_master",
             "rule": "same_or_shorter_than_replaced_company_interest_slot",
             "max_pages": 1,
+            "max_sentences": 2,
+            "max_chars": 420,
+            "compaction_helper": "tools.job_materials.material_constraints.compact_cover_letter_match",
             "overflow_action": "trim_then_omit; never shrink font or margins",
         },
         "sentence_roles": [
@@ -521,6 +548,7 @@ def build_tailored_payload(
     use_llm: bool = False,
     publisher_context: dict[str, Any] | None = None,
     job_assessment: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jd = (jd_text or "").strip()
     shallow = len(jd) < 150
@@ -531,6 +559,23 @@ def build_tailored_payload(
         assessment = dict(assessment)
         assessment["record"] = job_assessment
     research = company_research or {}
+    manifest = manifest if isinstance(manifest, dict) else {}
+    manual_overrides = manifest.get("overrides")
+    manual_overrides = manual_overrides if isinstance(manual_overrides, dict) else {}
+    manifest_job = manifest.get("job") if isinstance(manifest.get("job"), dict) else {}
+    role_title_contract = manifest_job.get("role_title_contract")
+    if not isinstance(role_title_contract, dict):
+        role_title_contract = build_role_title_contract(
+            job_title,
+            selected_primary=str(manual_overrides.get("role_primary") or ""),
+        )
+    # The manifest is the single selection point.  Downstream material never
+    # receives an A/B title and silently invents a third combined role.
+    job_title = str(
+        role_title_contract.get("primary")
+        or manifest_job.get("role_primary")
+        or job_title
+    ).strip()
     publisher_context = publisher_context if isinstance(publisher_context, dict) else {}
     publisher_classification = classify_publisher(
         publisher_name=str(
@@ -578,13 +623,21 @@ def build_tailored_payload(
     skills_rest = [s for s in skills if s not in skills_hit]
     skills_ordered = (skills_hit + skills_rest)[:14]
 
-    base_bullets = list(base.get("bullets") or [])
+    # G (capability lane) stores its verified facts in facts_anchor rather
+    # than bullets; fall back so evidence mapping still has real anchors.
+    # capability_upper is used ONLY for the evidence map gate (mapping JD focus
+    # to capability areas) and never enters the display bullets, so unverified
+    # upper capability cannot be claimed as history.
+    anchors = list(base.get("bullets") or []) or list(base.get("facts_anchor") or [])
+    upper_texts = [str(c) for c in (base.get("capability_upper") or [])]
+    base_bullets = list(anchors)
     bullets = rank_by_jd(base_bullets, combined_context)
     # The scanner's persisted strengths are the first downstream consumer:
     # they refine the deterministic JD order without allowing gaps to create
     # claims or reopening the fact source.
     bullets = rank_by_assessment(bullets, assessment)[:5]
-    evidence_map = build_evidence_map(jd_focus, base_bullets)
+    # Evidence gate uses anchors + capability upper (mapping only, see above).
+    evidence_map = build_evidence_map(jd_focus, anchors + upper_texts)
     base_factcheck = (base.get("factcheck") or {}).get("status")
     quality_gate = build_quality_gate(
         shallow=shallow,
@@ -694,6 +747,13 @@ def build_tailored_payload(
 
     payload: dict[str, Any] = {
         "mode": "tailored_from_af_base",
+        "job_manifest": {
+            "schema_version": manifest.get("schema_version"),
+            "job_id": manifest.get("job_id"),
+            "lane": manifest.get("lane"),
+            "tier": manifest.get("tier"),
+        },
+        "material_overrides": dict(manual_overrides),
         "base_id": base.get("base_id"),
         "base_label": base.get("label"),
         "factcheck_stage": "base_only",
@@ -701,6 +761,7 @@ def build_tailored_payload(
         "jd_shallow": shallow,
         "jd_keywords": keywords,
         "jd_focus": jd_focus,
+        "role_title_contract": role_title_contract,
         "summary": summary,
         "skills_ordered": skills_ordered,
         "bullets": bullets,
@@ -730,6 +791,7 @@ def build_tailored_payload(
                 "the JD capabilities and company operating context. Start with the "
                 "persisted assessment strengths; treat its gaps as review items only."
             ),
+            "manual_match": str(manual_overrides.get("match") or "").strip(),
         },
         "cover_letter_strategy": {
             "interest_angles": interest_angles,
@@ -743,6 +805,7 @@ def build_tailored_payload(
                 "length budget; fall back to JD-only or the generic letter without blocking apply."
             ),
             "role_industry_match": role_industry_match,
+            "manual_priority": str(manual_overrides.get("cl_pri") or "").strip(),
         },
         "evidence_map": evidence_map,
         "evidence_map_detail": evidence_map_detail,
@@ -756,7 +819,11 @@ def build_tailored_payload(
                 {
                     "slot": "opening",
                     "inputs": [job_title, application_target, *jd_focus[:2]],
-                    "instruction": "Name the role and lead with the strongest mapped capability.",
+                    "instruction": (
+                        "Name only the selected primary role once and lead with the strongest "
+                        "mapped capability; refer to it as this role thereafter. Do not list "
+                        "alternatives unless the user confirmed that they are one vacancy."
+                    ),
                 },
                 {
                     "slot": "role_industry_match",
@@ -798,6 +865,7 @@ def build_tailored_payload(
             "required_slots": ["subject", "greeting", "role", "jd_anchor", "evidence_highlights", "attachment_note", "signature"],
             "evidence_ids": (llmo_contract.get("cross_material") or {}).get("materials", {}).get("application_email", {}).get("evidence_ids", []),
             "instruction": "Keep the email plain text and use the same evidence order as the CV and cover letter; omit internal scores, gaps and system instructions.",
+            "manual_anchor": str(manual_overrides.get("email_anchor") or "").strip(),
         },
         "low_model_contract": {
             "mode": "constrained_blueprint",
@@ -812,6 +880,7 @@ def build_tailored_payload(
                 "application_preflight",
                 "quality_gate",
                 "job_assessment",
+                "role_title_contract",
                 "resume_strategy",
                 "evidence_map",
                 "llmo_anchor_status",
@@ -827,6 +896,7 @@ def build_tailored_payload(
                 "llmo.jd_anchors",
                 "llmo.evidence_nodes",
                 "llmo.cross_material",
+                "role_title_contract",
                 "publisher_classification",
                 "cover_letter_blueprint.role_industry_match",
             ],
@@ -837,8 +907,11 @@ def build_tailored_payload(
                 "connect sourced company fact to supported interest",
                 "use only evidence_ids linked to covered or partial JD anchors",
                 "replace the generic company-interest slot with one compact role/industry-match paragraph",
+                "compact the optional match paragraph with compact_cover_letter_match before placing it in the template",
                 "omit the optional match paragraph and retain the generic letter when evidence is insufficient",
                 "name only the verified employer in outbound text",
+                "select one primary role from role_title_contract; keep alternatives internal unless confirmed",
+                "preserve substantive parenthetical specialisms exactly in the selected role",
             ],
             "prohibited_transformations": [
                 "turn uncovered or prohibited_to_claim anchors into claims",
@@ -846,6 +919,8 @@ def build_tailored_payload(
                 "put key contact facts in images, text boxes, headers or footers",
                 "put a recruiter or agency name in an outbound filename or cover letter",
                 "guess an undisclosed client from the publisher name",
+                "replace a substantive parenthetical specialism with a comma or short dash",
+                "invent a combined title by joining slash-separated alternatives",
                 "append a new long company or industry paragraph",
                 "exceed the generic Cover Letter length budget or solve overflow by shrinking the layout",
             ],
@@ -897,7 +972,7 @@ def build_tailored_payload(
     payload["differentiation_fingerprint"] = hashlib.sha256(
         fingerprint_input.encode("utf-8")
     ).hexdigest()[:16]
-    mat = summary + " " + " ".join(skills_ordered) + " " + " ".join(bullets)
+    mat = payload["summary"] + " " + " ".join(payload["skills_ordered"]) + " " + " ".join(payload["bullets"])
     payload["jd_coverage"] = coverage(jd, mat)
 
     if use_llm and not shallow:
@@ -923,6 +998,31 @@ def build_tailored_payload(
                 jd,
                 payload["summary"] + " " + " ".join(payload["skills_ordered"]) + " " + " ".join(payload["bullets"]),
             )
+    # User-owned wording is applied after optional LLM rephrasing so a batch
+    # rerun cannot overwrite a confirmed override.  Overrides are explicit
+    # slots, not a second source of candidate facts.
+    if str(manual_overrides.get("summary") or "").strip():
+        payload["summary"] = str(manual_overrides["summary"]).strip()
+    if isinstance(manual_overrides.get("skills"), list):
+        payload["skills_ordered"] = [
+            str(item).strip()
+            for item in manual_overrides["skills"]
+            if str(item).strip()
+        ][:14]
+    if str(manual_overrides.get("match") or "").strip():
+        payload["resume_strategy"]["manual_match"] = str(manual_overrides["match"]).strip()
+    if str(manual_overrides.get("cl_pri") or "").strip():
+        payload["cover_letter_strategy"]["manual_priority"] = str(manual_overrides["cl_pri"]).strip()
+    if str(manual_overrides.get("email_anchor") or "").strip():
+        payload["application_email_blueprint"]["manual_anchor"] = str(manual_overrides["email_anchor"]).strip()
+    if manual_overrides:
+        payload["notes"].append(
+            "Applied explicit manifest overrides; generated fields remain rebuildable."
+        )
+    payload["jd_coverage"] = coverage(
+        jd,
+        payload["summary"] + " " + " ".join(payload["skills_ordered"]) + " " + " ".join(payload["bullets"]),
+    )
     return payload
 
 
@@ -1140,6 +1240,8 @@ def write_tailor_outputs(package: Path, payload: dict[str, Any]) -> None:
         f"- JD anchor IDs: {', '.join(match.get('jd_anchor_ids') or []) or '—'}",
         f"- evidence IDs: {', '.join(match.get('evidence_ids') or []) or '—'}",
         f"- length rule: {budget.get('rule') or 'same or shorter than generic slot'}",
+        f"- page budget: {budget.get('max_pages', 1)}; character budget: {budget.get('max_chars', 420)}",
+        f"- compaction helper: {budget.get('compaction_helper') or 'manual trim at sentence boundary'}",
         f"- fallback: {(match.get('fallback') or {}).get('mode') or 'generic_role'}",
         f"- apply blocking: {match.get('blocks_apply', False)}",
         f"- instruction: {match.get('instruction') or 'Use the generic Cover Letter when unsupported.'}",
@@ -1217,7 +1319,7 @@ def write_materials_status(
     shallow = bool(payload.get("jd_shallow") or meta.get("is_shallow"))
     preflight = payload.get("application_preflight") or {}
     issues: list[str] = []
-    if fc != "passed":
+    if fc not in {"passed", "capability_profile"}:
         issues.append(f"base factcheck is **{fc}** — fix via `base factcheck --lane {lane}` before trusting plan")
     if shallow or depth in {"stub", "missing", "structured", "shallow"}:
         issues.append(
@@ -1352,7 +1454,7 @@ def package_quality_exit_code(payload: dict[str, Any], package: Path, root: Path
     """
     fc = payload.get("base_factcheck")
     meta = jd_meta(package, root)
-    bad_fc = fc != "passed"
+    bad_fc = fc not in {"passed", "capability_profile"}
     bad_jd = bool(payload.get("jd_shallow") or meta.get("is_shallow"))
     if bad_fc and bad_jd:
         return 3

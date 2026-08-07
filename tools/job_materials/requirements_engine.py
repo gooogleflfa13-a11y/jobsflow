@@ -12,6 +12,7 @@ from tools.language_gate import FAIL as LANGUAGE_FAIL
 from tools.language_gate import FLAG as LANGUAGE_FLAG
 from tools.language_gate import PASS as LANGUAGE_PASS
 from tools.language_gate import evaluate_language_gate
+from tools.experience_parsing import parse_experience_requirement
 
 
 QUESTION_RULES = [
@@ -99,11 +100,54 @@ def _evidence(text: str, match: re.Match[str]) -> str:
     return re.sub(r"\s+", " ", text[start:end]).strip()[:240]
 
 
+def _experience_draft(evidence: str, profile: dict[str, Any]) -> dict[str, Any]:
+    """Return a review-only experience answer draft.
+
+    This is deliberately not an answer to the employer.  It gives a smaller
+    model the same lower-bound interpretation used by scoring and asks the
+    user to confirm before anything can reach an application package.
+    """
+    parsed = parse_experience_requirement(evidence)
+    if parsed is None or parsed.minimum_years is None:
+        return {}
+    raw_max = profile.get("max_relevant_years")
+    try:
+        max_years = float(raw_max)
+    except (TypeError, ValueError):
+        return {}
+    if max_years < 0:
+        return {}
+    minimum = parsed.minimum_years
+    display_max = int(max_years) if max_years.is_integer() else max_years
+    status = (
+        "draft_meets_profile"
+        if minimum <= max_years
+        else "draft_exceeds_profile"
+    )
+    relation = "within" if status == "draft_meets_profile" else "above"
+    return {
+        "draft_status": status,
+        "draft_basis": {
+            "jd_normalized": parsed.normalized,
+            "minimum_years": minimum,
+            "profile_max_relevant_years": display_max,
+        },
+        "draft_answer": (
+            f"JD requirement is at least {minimum} years ({parsed.normalized}); "
+            f"the configured relevant-experience baseline is {display_max} years, "
+            f"so the threshold is {relation} that baseline. Confirm the actual "
+            "candidate evidence before using this in an application."
+        ),
+        "requires_user_confirmation": True,
+    }
+
+
 def build_application_preflight(
     jd_text: str,
     *,
     known_answers: dict[str, Any] | None = None,
     candidate_languages: Any = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jd = jd_text or ""
     known = {
@@ -111,6 +155,7 @@ def build_application_preflight(
         for key, value in (known_answers or {}).items()
         if value is not None and str(value).strip()
     }
+    profile = profile if isinstance(profile, dict) else {}
     requirements = []
     questions = []
     review_items = []
@@ -154,6 +199,8 @@ def build_application_preflight(
             "answer": answer,
             "instruction": instruction,
         }
+        if field_id == "experience_years":
+            item.update(_experience_draft(item["evidence"], profile))
         requirements.append(item)
         if not answer:
             review_items.append(item)
@@ -203,6 +250,7 @@ def build_application_preflight(
                 "Show warnings to the user; a language FLAG is not an automatic rejection.",
                 "Store answers through the preflight answer command.",
                 "Do not draft final materials while ready_for_apply is false.",
+                "Treat experience_years.draft_answer as a review draft only; confirm the underlying evidence before use.",
             ],
         },
     }
@@ -247,10 +295,9 @@ def write_application_preflight(package: Path, value: dict[str, Any]) -> None:
         lines.append("- 无")
     lines += ["", "## Requirements to verify against the profile"]
     for item in value.get("review_items") or []:
-        lines += [
-            f"- **{item['id']}**: {item['instruction']}",
-            f"  - JD evidence: {item['evidence']}",
-        ]
+        lines += [f"- **{item['id']}**: {item['instruction']}", f"  - JD evidence: {item['evidence']}"]
+        if item.get("draft_answer"):
+            lines.append(f"  - Deterministic draft (confirm before use): {item['draft_answer']}")
     if not value.get("review_items"):
         lines.append("- 无")
     lines += ["", "## Warnings (do not silently ignore)"]

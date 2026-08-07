@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from tools.job_materials.role_titles import normalize_role_for_material
+
 
 PUBLISHER_TYPES = {"employer", "recruiter", "unknown"}
 
@@ -328,10 +330,13 @@ def build_material_filenames(
     employer = _clean(classification.get("application_target") or classification.get("employer_name"))
     publisher = _clean(classification.get("publisher_name"))
     kind = _clean(classification.get("publisher_type")).casefold() or "unknown"
+    # Keep one material-facing title.  The source title and any alternatives
+    # remain in the private manifest; filenames must not silently combine A/B.
+    material_role = normalize_role_for_material(role)
     parts = [
         _filename_part(candidate_name),
         _filename_part(employer),
-        _filename_part(role, "Application"),
+        _filename_part(material_role, "Application"),
     ]
     stem = "_".join(part for part in parts if part)
     stem = stem[:140].strip("._") or "Application"

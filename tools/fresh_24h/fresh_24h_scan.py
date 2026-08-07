@@ -549,6 +549,19 @@ def apply_rules(hit: JobHit, cfg: dict[str, Any]) -> None:
         hit.reject_reason = "outside_configured_search_scope"
         return
 
+    # Law-relevance gate (2026-08-03): a role must look law-related in title/teaser
+    # even if it contains some broad relevance keyword.  Excludes internal audit,
+    # IT, accounting, admin and similar noise before scoring.
+    # Private-configuration driven only: without law_relevance_keywords in the
+    # private profile the gate is disabled (system_rules: hard rejection and
+    # keyword relevance must come from the private configuration, not a built-in
+    # profession).
+    law_kw = cfg.get("law_relevance_keywords")
+    if law_kw and not any(re.search(pat, text) for pat in law_kw):
+        hit.decision = "reject"
+        hit.reject_reason = "not_law_related"
+        return
+
     for pat in cfg.get("hard_reject_title_patterns") or []:
         if re.search(pat, text):
             hit.decision = "reject"
@@ -571,7 +584,8 @@ def load_tracker_keys(tracker_path: Path) -> tuple[set[str], set[str], list[str]
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
-            u = normalize_url(row.get("链接") or "")
+            # 主表快照用「链接」，fresh 候选 CSV 用「url」列，两者都要认
+            u = normalize_url(row.get("链接") or row.get("url") or "")
             if u:
                 urls.add(u)
             # also bare linkedin numeric
@@ -736,6 +750,21 @@ def append_to_tracker(
     return written
 
 
+def parse_page_budget(raw: str) -> dict[str, int]:
+    """Parse --page-budget into per-portal page counts (default jobsdb=3/linkedin=2/ct=1)."""
+    default = {"jobsdb": 3, "linkedin": 2, "ctgoodjobs": 1}
+    if not raw:
+        return default
+    if str(raw).isdigit():
+        return {p: int(raw) for p in default}
+    out = dict(default)
+    for part in str(raw).split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = int(v)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Scan HK portals for fresh jobs (daily 24h or temp since last refresh)"
@@ -784,7 +813,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print refresh state and exit",
     )
-    ap.add_argument("--limit-per-query", type=int, default=15, help="CLI --limit per query")
+    ap.add_argument("--limit-per-query", type=int, default=30, help="CLI --limit per query")
+    ap.add_argument(
+        "--page-budget",
+        default="",
+        help=(
+            "Per-portal page budget, e.g. 'jobsdb=3,linkedin=2,ctgoodjobs=1' "
+            "or a single int for all portals (default jobsdb=3,linkedin=2,ctgoodjobs=1)"
+        ),
+    )
     ap.add_argument(
         "--out-dir",
         type=Path,
@@ -871,6 +908,35 @@ def main(argv: list[str] | None = None) -> int:
     location = cfg.get("location_linkedin") or "Hong Kong"
 
     url_keys, ct_keys, existing_ids, _ = load_tracker_keys(tracker_path)
+    # 去重集合扩展：仅并入主表归档（已入表职位防重复报新）。不并入历史
+    # fresh 候选——temp 窗口内的新职位即使上一轮扫到过但未入表，对用户
+    # 仍是新职位（重新从窗口起点做临时检索时它们应继续出现）。
+    archived_tabs = tracker_path.parent / "archived_main_tabs.json"
+    if archived_tabs.exists():
+        try:
+            _arch = json.loads(archived_tabs.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _arch = None
+        if isinstance(_arch, dict):
+            _urls: set[str] = set()
+
+            def _collect_arch_urls(node):
+                if isinstance(node, str):
+                    u = normalize_url(node)
+                    if u:
+                        _urls.add(u)
+                        m = re.search(r"/(\d{8,})(?:/|$)", u)
+                        if m:
+                            _urls.add(m.group(1))
+                elif isinstance(node, list):
+                    for item in node:
+                        _collect_arch_urls(item)
+                elif isinstance(node, dict):
+                    for item in node.values():
+                        _collect_arch_urls(item)
+
+            _collect_arch_urls(_arch)
+            url_keys |= _urls
 
     all_hits: list[JobHit] = []
     errors: list[dict[str, str]] = []
@@ -898,19 +964,22 @@ def main(argv: list[str] | None = None) -> int:
                 term = terms.get("linkedin") or terms.get("jobsdb")
             if not term:
                 continue
-            request = {
-                "request_id": f"{portal}:{len(work_items)}",
-                "_sequence": len(work_items),
-                "portal": portal,
-                "query_id": qid,
-                "track_hint": track_hint,
-                "term": term,
-                "jobage": hours_to_jobage(scan_hours, portal),
-                "location": location if portal == "linkedin" else None,
-                "limit": args.limit_per_query,
-            }
-            work_items.append(request)
-            work_by_portal.setdefault(portal, []).append(request)
+            page_budgets = parse_page_budget(args.page_budget)
+            for page in range(1, page_budgets.get(portal, 1) + 1):
+                request = {
+                    "request_id": f"{portal}:{page}:{len(work_items)}",
+                    "_sequence": len(work_items),
+                    "portal": portal,
+                    "query_id": qid,
+                    "track_hint": track_hint,
+                    "term": term,
+                    "jobage": hours_to_jobage(scan_hours, portal),
+                    "location": location if portal == "linkedin" else None,
+                    "limit": args.limit_per_query,
+                    "page": page,
+                }
+                work_items.append(request)
+                work_by_portal.setdefault(portal, []).append(request)
             portal_cfg_by_name[portal] = pcfg
 
     worker_results: dict[str, list[tuple[dict[str, Any], list[dict[str, Any]], str | None]]] = {}
@@ -953,35 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
             str(request["request_id"]),
             ([], "portal worker returned no response"),
         )
-        call_log.append(
-            {
-                "portal": portal,
-                "query_id": qid,
-                "term": request["term"],
-                "jobage": request["jobage"],
-                "count": len(results),
-                "error": err,
-                "worker": "portal_batch" if portal in BATCH_PORTALS else "legacy_serial",
-                "session_reuse": portal == "ctgoodjobs",
-                "ct_cookie_expired": bool(
-                    err
-                    and portal == "ctgoodjobs"
-                    and ("400" in err or "sid" in err.lower())
-                ),
-            }
-        )
-        if err:
-            err_info = {"portal": portal, "query_id": qid, "error": err}
-            if portal == "ctgoodjobs" and ("400" in err or "sid" in err.lower()):
-                err_info["ct_cookie_expired"] = True
-                print(
-                    f"[warn] {portal}/{qid}: CTgoodjobs cookie expired or invalid — "
-                    f"set CTGOOD_SID + CTGOOD_VISITOR_ID env vars or delete them to trigger re-bootstrap",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"[warn] {portal}/{qid}: {err}", file=sys.stderr)
-            errors.append(err_info)
+        counters = {"new": 0, "duplicate": 0, "reject": 0}
         for card in results:
             hit = card_to_hit(card, source=portal, query_id=qid, track_hint=track_hint)
             if not hit.url and not hit.title:
@@ -1018,8 +1059,41 @@ def main(argv: list[str] | None = None) -> int:
                     hit.decision = "duplicate"
                     hit.reject_reason = "already_in_tracker"
 
+            counters[hit.decision] = counters.get(hit.decision, 0) + 1
             all_hits.append(hit)
-
+        call_log.append(
+            {
+                "portal": portal,
+                "query_id": qid,
+                "term": request["term"],
+                "jobage": request["jobage"],
+                "page": request.get("page", 1),
+                "raw_count": len(results),
+                "new_unique_count": counters.get("new", 0),
+                "duplicate_count": counters.get("duplicate", 0),
+                "filtered_count": counters.get("reject", 0),
+                "error": err,
+                "worker": "portal_batch" if portal in BATCH_PORTALS else "legacy_serial",
+                "session_reuse": portal == "ctgoodjobs",
+                "ct_cookie_expired": bool(
+                    err
+                    and portal == "ctgoodjobs"
+                    and ("400" in err or "sid" in err.lower())
+                ),
+            }
+        )
+        if err:
+            err_info = {"portal": portal, "query_id": qid, "error": err}
+            if portal == "ctgoodjobs" and ("400" in err or "sid" in err.lower()):
+                err_info["ct_cookie_expired"] = True
+                print(
+                    f"[warn] {portal}/{qid}: CTgoodjobs cookie expired or invalid — "
+                    f"set CTGOOD_SID + CTGOOD_VISITOR_ID env vars or delete them to trigger re-bootstrap",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"[warn] {portal}/{qid}: {err}", file=sys.stderr)
+            errors.append(err_info)
     # Sort: new first, then by age
     def sort_key(h: JobHit) -> tuple:
         pri = {"new": 0, "duplicate": 1, "reject": 2}.get(h.decision, 9)

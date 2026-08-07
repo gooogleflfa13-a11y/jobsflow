@@ -25,9 +25,13 @@
    用户已经表达或履历能够支持的兴趣；没有可靠公司信息时，改用 JD 和已提供材料，
    或省略该可选段落。
 5. 发送前核对 `publisher_type`、`publisher_name`、`employer_name`：猎头/招聘机构只作为内部来源记录，不能出现在外发文件名或 Cover Letter 中；客户未披露时不猜测用人公司。
-6. 使用 `tailor_plan.json.material_filenames` 的外发命名建议，再从 master 复制并编辑 DOCX。内容定稿后各执行一次 LibreOffice headless PDF 转换；CV 与 Cover Letter 均须 1 页。相同 DOCX 内容直接复用 PDF 哈希缓存。
-7. 验证 PDF 页数、可读文字层、联系方式、JD 关键词覆盖与公司事实来源。失败时修正文案/DOCX 后重建；不得靠缩放隐藏内容。
-8. 向用户列出最终文件、研究来源、关键差异化、事实缺口和验证结果。未获得用户明确授权，不自动向网站提交。
+6. 使用 `tailor_plan.json.role_title_contract` 的 `role_primary` 作为唯一对外职位名。保留有业务含义的括号及其词汇（例如 `Paralegal (Corporate Funds)`）；不要用短横线或逗号替代。斜杠职位的备选项只在用户确认是一份合并岗位时才可同时写入，否则 Cover Letter 只提及主职位一次。歧义时可先用 `python3 -m tools.job_materials role show` 查看，再用 `role choose` 确认。
+7. 使用 `tailor_plan.json.material_filenames` 的外发命名建议，再从 master 复制并编辑 DOCX。内容定稿后各执行一次 LibreOffice headless PDF 转换；CV 与 Cover Letter 均须 1 页。相同 DOCX 内容直接复用 PDF 哈希缓存。
+8. 验证 PDF 页数、可读文字层、联系方式、JD 关键词覆盖与公司事实来源。失败时修正文案/DOCX 后重建；不得靠缩放隐藏内容。
+9. 运行 `python3 -m tools.job_materials validate --package <路径>`，读取
+   `materials_validation.json` / `.md`，确认岗位编号层级、猎头/雇主边界、英文材料语言、
+   残缺句、雇主名称和 Cover Letter 页数均通过。该命令只报告问题，不自动改写用户 DOCX。
+10. 向用户列出最终文件、研究来源、关键差异化、事实缺口和验证结果。未获得用户明确授权，不自动向网站提交。
 
 ## 已确认事实回写
 

@@ -8,6 +8,7 @@ from docx import Document
 from pypdf import PdfWriter
 
 from tools.core_applications.validate_package import validate_package
+from tools.job_materials.__main__ import main as materials_main
 
 
 COMPANY = "Acme"
@@ -165,6 +166,93 @@ def test_validator_rejects_zero_dimension_pdf(tmp_path: Path):
     errors = validate_package(tmp_path, COMPANY, ROLE)
 
     assert any(pdf_path.name in error and "dimension" in error.lower() for error in errors)
+
+
+def _write_job_manifest(package_dir: Path, **job_overrides) -> dict:
+    job = {
+        "role_display": ROLE,
+        "role_material": ROLE,
+        "company_source": COMPANY,
+        "publisher_name": COMPANY,
+        "publisher_type": "employer",
+        "employer_name": COMPANY,
+        "company_out": COMPANY,
+    }
+    job.update(job_overrides)
+    manifest = {
+        "schema_version": 1,
+        "job_id": "A0-001",
+        "lane": "A",
+        "tier": {"code": "0", "label": "核心", "source": "job_id"},
+        "job": job,
+        "outbound": {"material_language": "en"},
+        "paths": {"package_dir": str(package_dir.resolve()), "path_tier_mismatch": False},
+        "validation": {
+            "material_language": "en",
+            "max_cover_letter_pages": 1,
+            "path_tier_mismatch": False,
+        },
+    }
+    (package_dir / "job_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    return manifest
+
+
+def test_manifest_contract_accepts_employer_package(tmp_path: Path):
+    write_valid_package(tmp_path)
+    manifest = _write_job_manifest(tmp_path)
+
+    assert validate_package(tmp_path, COMPANY, ROLE, job_manifest=manifest) == []
+
+
+def test_materials_validate_command_writes_machine_and_human_reports(tmp_path: Path):
+    write_valid_package(tmp_path)
+    _write_job_manifest(tmp_path)
+
+    assert materials_main(["validate", "--package", str(tmp_path)]) == 0
+    report = json.loads((tmp_path / "materials_validation.json").read_text(encoding="utf-8"))
+    assert report["status"] == "passed"
+    manifest = json.loads((tmp_path / "job_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifacts"]["validation"]["status"] == "passed"
+    assert "No contract violations" in (tmp_path / "materials_validation.md").read_text(encoding="utf-8")
+
+
+def test_manifest_contract_catches_recruiter_leak_page_overflow_and_residual_sentence(tmp_path: Path):
+    write_valid_package(tmp_path)
+    manifest = _write_job_manifest(
+        tmp_path,
+        company_source="Michael Page",
+        publisher_name="Michael Page",
+        publisher_type="recruiter",
+        employer_name="",
+        company_out="",
+    )
+    manifest["paths"]["package_dir"] = str((tmp_path / "wrong").resolve())
+    manifest["validation"]["path_tier_mismatch"] = True
+    manifest["paths"]["path_tier_mismatch"] = True
+    (tmp_path / "job_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    cover = next(tmp_path.glob("*_Cover_Letter.docx"))
+    document = Document()
+    document.add_paragraph("Michael Page Legal Counsel support .")
+    document.add_paragraph("Second page")
+    document.save(cover)
+    pdf = next(tmp_path.glob("*_Cover_Letter.pdf"))
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    with pdf.open("wb") as output:
+        writer.write(output)
+
+    errors = validate_package(tmp_path, "", ROLE, job_manifest=manifest)
+
+    assert any("path mismatch" in error for error in errors)
+    assert any("tier" in error for error in errors)
+    assert any("recruiter/agency name leaked" in error for error in errors)
+    assert any("maximum allowed is 1" in error for error in errors)
+    assert any("incomplete sentence" in error for error in errors)
 
 
 def test_validator_reports_unreadable_pdf(tmp_path: Path):

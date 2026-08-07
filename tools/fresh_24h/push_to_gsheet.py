@@ -47,6 +47,7 @@ from batch_mark import (  # noqa: E402
     make_batch_id,
     mark_new_rows,
     sort_fresh_rows,
+    write_entered_registry,
 )
 from linkedin_enrich import (  # noqa: E402
     SHALLOW_DESC_CHARS,
@@ -1183,6 +1184,14 @@ def main(argv: list[str] | None = None) -> int:
     batch_id = make_batch_id(args.mode)
     entered = hkt_now_str()
     mark_new_rows(new_rows, batch_id=batch_id, entered_at=entered)
+    try:
+        write_entered_registry(
+            new_rows,
+            tracker_dir=REPO / "JobSearch_2026" / "02_Tracker",
+            batch_id=batch_id,
+        )
+    except Exception as exc:  # registry is best-effort; never block the push
+        print(f"WARN: entered registry write skipped: {exc}", file=sys.stderr)
 
     combined = existing_rows + new_rows
     combined = sort_fresh_rows(combined)

@@ -29,6 +29,19 @@ suffixes, Chinese experience wording, and date exclusion.
 
 The same update also adds several speed improvements without changing the workflow: two-pass scoring reuses scored artifacts and the URL-keyed JD cache; LinkedIn details are fetched serially by one long-lived Bun worker; Playwright deep fetches reuse one browser/context per scoring cycle and short-cache WAF, CAPTCHA, and timeout failures; Google Sheets pushes append new rows and update only changed rows with local formatting. First-time fetches remain subject to portal latency, rate limits, and CAPTCHA; a schema change triggers one safe full sync.
 
+Materials now also use a repeatable per-job Manifest: the job ID derives the package tier, JD keywords and recruiter-safe outbound filenames, while dependency fingerprints and explicit overrides survive reruns. Real JD/profile/lane changes mark old artifacts stale. A single validation report checks recruiter-name leaks, tier routing, incomplete sentences, Chinese residue in English materials, employer naming and the Cover Letter page limit before sending.
+
+Role titles now have an explicit contract as well: `role_display` retains the
+posting title, while a slash-separated `A/B` title yields one recommended
+primary role plus alternatives. Outbound materials use one primary role by
+default; inspect or confirm an ambiguous choice with
+`python3 -m tools.job_materials role show` and `role choose`. Parentheses that carry a
+real business area or specialism remain intact—for example, `Paralegal
+(Corporate Funds)`—while only obvious location, work-arrangement, contract or
+identifier metadata parentheses are removed from the material-facing title.
+Filename sanitisation does not introduce a short dash or comma, and it never
+silently combines multiple roles into a new title.
+
 ## 🆕 Update · 2026-08-03
 
 The scan path now uses **portal-level parallel workers with serial queries inside each portal**. LinkedIn, JobsDB, and CTgoodjobs each run one worker, so the three portals can be searched at the same time while each portal keeps its original query order and pacing.
@@ -190,6 +203,17 @@ uses only the JD, role function or industry context, and it can be omitted when
 evidence is insufficient. It never adds to the generic one-page length budget or
 blocks `/apply`.
 
+Role titles also pass through a deterministic contract: the posting text is
+kept in `role_display`, while a slash-separated `A/B` title yields a recommended
+primary role and internal alternatives. Tailored material uses one primary role
+by default; inspect or confirm an ambiguous choice with
+`python3 -m tools.job_materials role show` and `role choose`. Parentheses that express a
+real specialism, such as `Paralegal (Corporate Funds)`, remain intact. Only
+obvious location, contract/work-arrangement or identifier metadata parentheses
+are removed from the material-facing title. Filenames do not replace
+parentheses with a short dash or comma, and the Cover Letter normally names the
+primary role once rather than listing alternatives.
+
 A deterministic preflight extracts salary, availability, work authorization, language/licence, experience and attachment requirements. A separate language gate compares explicit job-language requirements with the private language profile: an undeclared required language is excluded, a potentially higher level is flagged for human judgment, and the language used to write the advert is not mistaken for a job requirement. Salary parsing also handles localized numbers, range hyphens, and `k/M/B` or `千/万/亿` amount suffixes; ambiguous formats stay neutral and visible for confirmation. The system then produces an evidence map, four-slot cover-letter blueprint and quality gate, so models with different capability levels follow the same analysis rather than improvising or silently skipping questions.
 
 DOCX masters remain the source. LibreOffice runs headlessly, CVs and cover letters default to one page (unless you explicitly need otherwise), and unchanged documents reuse a content-hash PDF cache.
@@ -258,6 +282,8 @@ JobSearch_2026/
 │       ├── company_research.md    # Company facts, business and sources
 │       ├── application_preflight.json
 │       ├── tailor_plan.md         # JD → candidate evidence map
+│       ├── job_manifest.json      # generated fields, overrides, input fingerprints (private)
+│       ├── materials_validation.md # one release-gate report before sending
 │       └── CV / Cover Letter / PDF
 ├── 02_Tracker/                   # CSV tracker, JD cache and scan outputs
 └── 03_Applications/              # Optional final-application archive
@@ -273,6 +299,15 @@ JobSearch_2026/
 Each job ID connects the tracker row to its material package. You can back up the
 whole private workspace, review why a decision was made, and use local CSV without
 Google Sheets; Sheets is an optional tracker sync, not a CV or cover-letter store.
+
+Each package also has a private `job_manifest.json` hand-off contract. JobsFlow
+regenerates role/JD keywords, safe filenames and dependency fingerprints there,
+while confirmed wording belongs in `overrides` and survives batch reruns. A real
+JD, profile, company-research or lane change marks old artifacts stale instead of
+silently reusing them. Before sending, run
+`python3 -m tools.job_materials validate --package <path>` to check recruiter-name
+leaks, tier routing, Chinese residue in English materials, incomplete sentences,
+employer naming and the one-page Cover Letter limit.
 
 See [SETUP.md](SETUP.md), [docs/system_rules.md](docs/system_rules.md), and [docs/tracker_defaults.md](docs/tracker_defaults.md).
 

@@ -201,9 +201,28 @@ python3 -m tools.job_materials pipeline --package "..." --lane A
   undisclosed client remains unnamed and must not be guessed. Use the generated
   `material_filenames` values for external CV/CL filenames while retaining the
   publisher only inside the private package for traceability.
+- Treat the job title as a separate deterministic contract. Preserve the source
+  `role_display`; split a top-level slash into one recommended `role_primary`
+  and internal `role_alternates`, and use only one primary title in outbound
+  material unless the user confirms the roles are one vacancy. Preserve
+  substantive parenthetical specialisms exactly (for example, `Paralegal
+  (Corporate Funds)`). Remove only obvious location, work-arrangement,
+  contract or identifier metadata parentheses from the material-facing title;
+  never replace them with a comma or short dash, and never invent a combined
+  title from slash alternatives. The `role show/choose` CLI is the explicit
+  confirmation path for ambiguous titles.
 - Deterministic preflight, evidence-map and quality-gate outputs are mandatory so
   lower-capability models cannot silently skip requirements such as salary,
   authorization, language, location or schedule.
+- Each selected package must carry a private `job_manifest.json` hand-off
+  contract. Generated fields may be rebuilt; confirmed wording belongs in its
+  `overrides` object and must survive reruns. JD, profile, company-research or
+  lane changes invalidate generated artifacts through dependency fingerprints.
+- Before a package is sent, run the manifest-aware release gate:
+  `python3 -m tools.job_materials validate --package <path>`. It checks the
+  recruiter/employer boundary, ID-to-tier routing, outbound language residue,
+  incomplete sentences and the Cover Letter page budget. The gate reports
+  failures; it does not silently rewrite user-owned DOCX files.
 
 ## 6. Final checks
 

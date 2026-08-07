@@ -9,7 +9,9 @@ After each daily or temp scan:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Any
 
 # User-facing label when a row is no longer the newest batch
@@ -86,3 +88,67 @@ def ensure_batch_columns(row: dict[str, Any]) -> dict[str, Any]:
     row.setdefault("批次", row.get("批次") or "")
     row.setdefault("入表时间", row.get("入表时间") or "")
     return row
+
+
+def write_entered_registry(
+    rows: list[dict[str, Any]],
+    *,
+    tracker_dir: str | Path,
+    batch_id: str | None = None,
+) -> Path | None:
+    """Persist the officially allocated sheet IDs (岗位编号) to a local registry.
+
+    Google Sheets is the authoritative source for IDs allocated on push; the
+    scored CSVs only carry pre-push prefix IDs (e.g. TMP).  Material tooling
+    (build_jobs_json / find_tracker_row) consults this registry as a fallback so
+    a pushed row can be resolved even before the next scan writes it locally.
+
+    Registry shape (append + dedupe by 岗位编号):
+      {
+        "schema_version": 1,
+        "updated_at": "...HKT",
+        "entries": {
+          "D0-020": {"id": "D0-020", "url": "...", "title": "...",
+                      "company": "...", "batch": "...", "entered_at": "..."}
+        }
+      }
+    """
+    from pathlib import Path
+
+    tracker = Path(tracker_dir)
+    if not tracker.is_dir():
+        return None
+    reg_path = tracker / "entered_ids.json"
+
+    existing: dict[str, Any] = {"schema_version": 1, "updated_at": "", "entries": {}}
+    try:
+        raw = json.loads(reg_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
+            existing = raw
+    except (OSError, ValueError):
+        pass
+
+    entries = existing.setdefault("entries", {})
+    now = hkt_now_str()
+    for r in rows:
+        jid = str(r.get("岗位编号") or "").strip()
+        url = str(r.get("链接") or r.get("url") or "").strip()
+        title = str(r.get("职位") or r.get("title") or "").strip()
+        company = str(r.get("公司") or r.get("company") or "").strip()
+        if not jid:
+            continue
+        entries[jid] = {
+            "id": jid,
+            "url": url,
+            "title": title,
+            "company": company,
+            "lane": str(r.get("简历版本") or r.get("lane") or "").strip()[:1].upper(),
+            "batch": str(r.get("批次") or batch_id or ""),
+            "entered_at": str(r.get("入表时间") or now),
+        }
+    existing["updated_at"] = now
+
+    from tools.io_utils import atomic_write_json
+
+    atomic_write_json(reg_path, existing)
+    return reg_path

@@ -137,6 +137,36 @@ def test_tailor_combines_company_and_jd_into_differentiated_strategy():
     assert first["cover_letter_blueprint"]["paragraphs"][1]["legacy_slot"] == "company_interest"
 
 
+def test_manifest_overrides_survive_tailor_and_are_explicit_manual_slots():
+    payload = build_tailored_payload(
+        base=_base(),
+        job_title="Operations Analyst",
+        company="Acme",
+        jd_text="Build and monitor operational workflows with stakeholders.",
+        company_research=_research("Acme", "workflow software"),
+        manifest={
+            "job_id": "A0-001",
+            "overrides": {
+                "summary": "Confirmed summary written by the user.",
+                "match": "Confirmed evidence emphasis written by the user.",
+                "cl_pri": "Confirmed cover-letter priority.",
+                "email_anchor": "Confirmed email anchor.",
+            },
+        },
+    )
+
+    assert payload["summary"] == "Confirmed summary written by the user."
+    assert payload["resume_strategy"]["manual_match"] == (
+        "Confirmed evidence emphasis written by the user."
+    )
+    assert payload["cover_letter_strategy"]["manual_priority"] == (
+        "Confirmed cover-letter priority."
+    )
+    assert payload["application_email_blueprint"]["manual_anchor"] == (
+        "Confirmed email anchor."
+    )
+
+
 def test_low_model_quality_gate_blocks_generic_company_materials():
     payload = build_tailored_payload(
         base=_base(),

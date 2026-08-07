@@ -83,6 +83,9 @@ def allocate_ids(
         letter = (str(row.get(letter_key) or "F").strip().upper()[:1] or "F")
         if letter not in "ABCDEFG":
             letter = "F"
+        # B 类已取消（2026-08-03）：原 B 类（合同商事/Counsel）统一归 F
+        if letter == "B":
+            letter = "F"
         pref = f"{letter}{digit}"
         identity = str(row.get("链接") or row.get("url") or "").strip()
         prior_id = str(existing_ids.get(identity) or row.get("岗位编号") or "").strip()

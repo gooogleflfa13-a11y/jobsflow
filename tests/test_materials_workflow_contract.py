@@ -212,5 +212,10 @@ def test_clean_clone_selected_job_to_materials_pipeline(tmp_path, monkeypatch):
     assert materials_main(["pipeline", "--job-id", "A0-005", "--lane", "A"]) == 0
     assert (package / "tailor_plan.json").exists()
     assert (package / "materials_status.md").exists()
+    manifest = json.loads((package / "job_manifest.json").read_text(encoding="utf-8"))
+    plan = json.loads((package / "tailor_plan.json").read_text(encoding="utf-8"))
+    assert manifest["job_id"] == "A0-005"
+    assert plan["job_manifest"]["job_id"] == "A0-005"
+    assert manifest["artifacts"]["resume"]["status"] == "plan_ready"
     assert json.loads((package / "application_preflight.json").read_text(encoding="utf-8"))["ready_for_apply"]
     assert "develop, implement and monitor" in read_jd(package, root)

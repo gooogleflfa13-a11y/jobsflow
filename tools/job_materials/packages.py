@@ -8,11 +8,18 @@ stable package boundary, so this module is the single writer for the initial
 from __future__ import annotations
 
 import csv
+import json
 import re
 from pathlib import Path
 from typing import Any
 
 from tools.io_utils import atomic_write_json, atomic_write_text
+from tools.job_materials.manifest import (
+    build_job_manifest,
+    derive_tier,
+    refresh_job_manifest,
+    write_job_manifest,
+)
 from tools.job_materials.paths import is_archived_path, load_lanes, masters_dir
 
 
@@ -42,11 +49,53 @@ def _tracker_files(root: Path) -> list[Path]:
     return sorted(paths, key=key)
 
 
-def find_tracker_row(root: Path, job_id: str) -> tuple[dict[str, str], Path] | None:
-    """Return the newest exact tracker row for ``job_id``."""
+def _registry_row(root: Path, job_id: str) -> dict[str, str] | None:
+    """Fallback lookup in the push-written entered_ids registry.
+
+    Google Sheets is the authoritative source for IDs allocated on push; the
+    scored CSVs only carry pre-push prefix IDs (e.g. TMP).  This registry lets
+    material tooling resolve a pushed row even before the next scan writes it
+    locally.
+    """
     wanted = str(job_id or "").strip()
     if not wanted:
         return None
+    reg = root / "02_Tracker" / "entered_ids.json"
+    try:
+        raw = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entries = raw.get("entries") if isinstance(raw, dict) else None
+    if not isinstance(entries, dict):
+        return None
+    entry = entries.get(wanted)
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "岗位编号": str(entry.get("id") or wanted),
+        "职位": str(entry.get("title") or ""),
+        "公司": str(entry.get("company") or ""),
+        "链接": str(entry.get("url") or ""),
+        "简历版本": str(entry.get("lane") or "").strip()[:1].upper(),
+        "批次": str(entry.get("batch") or ""),
+        "入表时间": str(entry.get("entered_at") or ""),
+    }
+
+
+def find_tracker_row(root: Path, job_id: str) -> tuple[dict[str, str], Path] | None:
+    """Return the newest exact tracker row for ``job_id``.
+
+    The push-written entered_ids registry is consulted FIRST: it holds the
+    officially allocated IDs (e.g. D0-020 -> current job) and is authoritative
+    over historical CSVs, where the same ID may have been reused by an older,
+    unrelated posting.  CSV files remain the fallback for pre-push rows.
+    """
+    wanted = str(job_id or "").strip()
+    if not wanted:
+        return None
+    reg_row = _registry_row(root, wanted)
+    if reg_row:
+        return reg_row, root / "02_Tracker" / "entered_ids.json"
     for path in _tracker_files(root):
         try:
             with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -138,6 +187,15 @@ def create_package_from_tracker(root: Path, job_id: str) -> Path:
     """
     existing = _existing_package(root, job_id)
     if existing:
+        found = find_tracker_row(root, job_id)
+        if found:
+            row, tracker_path = found
+            refresh_job_manifest(
+                root=root,
+                package=existing,
+                row=row,
+                tracker_path=tracker_path,
+            )
         return existing
 
     found = find_tracker_row(root, job_id)
@@ -149,7 +207,12 @@ def create_package_from_tracker(root: Path, job_id: str) -> Path:
     lane = _lane_for_row(root, row)
     lanes = load_lanes(root)
     lane_folder = lanes.get(lane, {}).get("folder") or f"{lane}_track"
-    tier = _safe_component(row.get("层级") or "待审", fallback="待审")
+    # The numeric tier in a stable job ID is authoritative.  A stale tracker
+    # display value must not silently route a C0/D0 package into 一级/二级.
+    tier = _safe_component(
+        derive_tier(job_id, row.get("层级") or "").get("label") or "待审",
+        fallback="待审",
+    )
     company = _safe_component(
         row.get("公司") or row.get("company") or "未披露公司", fallback="未披露公司"
     )
@@ -185,6 +248,15 @@ def create_package_from_tracker(root: Path, job_id: str) -> Path:
             "tracker_path": str(tracker_path),
             "row": row,
         },
+    )
+    write_job_manifest(
+        package,
+        build_job_manifest(
+            root=root,
+            package=package,
+            row=row,
+            tracker_path=tracker_path,
+        ),
     )
     return package.resolve()
 

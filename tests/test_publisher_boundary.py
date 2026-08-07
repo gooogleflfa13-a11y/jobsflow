@@ -95,6 +95,50 @@ def test_outbound_filenames_omit_agency_and_use_verified_client():
     assert names["publisher_name_omitted"] == "Michael Page"
 
 
+def test_outbound_filename_keeps_meaningful_parentheses_without_short_dash():
+    names = build_material_filenames(
+        role="Paralegal (Corporate Funds)",
+        candidate_name="Jane Doe",
+        classification=classify_publisher(
+            publisher_name="Acme",
+            publisher_type="employer",
+            employer_name="Acme",
+        ),
+    )
+    assert "Paralegal_(Corporate_Funds)" in names["cv_docx"]
+    assert "-" not in names["cv_docx"]
+
+
+def test_tailor_payload_uses_one_primary_role_and_preserves_specialism_parentheses():
+    payload = build_tailored_payload(
+        base=_base(),
+        job_title="Paralegal / Legal Assistant",
+        company="Acme",
+        jd_text="Support legal operations and maintain matter records.",
+        company_research={
+            "company": "Acme",
+            "publisher_type": "employer",
+            "publisher_name": "Acme",
+            "employer_name": "Acme",
+            "nature": "Private company",
+            "business": "Business services",
+            "verified_signals": [],
+        },
+    )
+    assert payload["role"] == "Paralegal"
+    assert payload["role_title_contract"]["alternates"] == ["Legal Assistant"]
+    assert "one" in payload["cover_letter_blueprint"]["paragraphs"][0]["instruction"]
+
+    specialism = build_tailored_payload(
+        base=_base(),
+        job_title="Paralegal (Corporate Funds)",
+        company="Acme",
+        jd_text="Support corporate funds transactions and maintain matter records.",
+        company_research={},
+    )
+    assert specialism["role"] == "Paralegal (Corporate Funds)"
+
+
 def test_tailor_plan_never_feeds_undisclosed_agency_as_employer():
     research = _research()
     research["interest_angles"] = ["Michael Page is a respected agency", "Interest in operations"]
